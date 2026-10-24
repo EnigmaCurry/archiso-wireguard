@@ -93,7 +93,8 @@ The default branch is `master`. `.gitignore` excludes `secrets/`
 Repo layout:
 
 ```
-Justfile                 # just config / just build / just clean
+Justfile                 # just config / build / inspect / clean
+inspect.sh               # lists secrets/overlay in an ISO, checks perms
                          # (clean: remove the Podman pacman cache volume)
 config.sh                # creates missing secrets as commented templates
 build.sh                 # assembles profile and runs mkarchiso
@@ -361,3 +362,34 @@ The host now has only `podman` and `just` for the build.
 Rebuilt with `just build` after the removal: succeeded in ~3 minutes.
 Note: `unsquashfs` (squashfs-tools) is gone from the host too, so the
 ISO inspection commands logged earlier now need to run in a container.
+
+## `just inspect`: check what's in an ISO
+
+```
+just inspect                       # newest ISO in secrets/out/
+just inspect secrets/out/<file>.iso
+```
+
+`inspect.sh` uses the same host/container pattern as `build.sh`: on the
+host it runs the archlinux container (no `--privileged`), mounting only
+itself and the chosen ISO read-only, plus the pacman cache volume. In
+the container it installs `squashfs-tools`, extracts
+`arch/x86_64/airootfs.sfs` with `bsdtar`, and prints:
+
+ * the ISO name/size, `IMAGE_ID`/`IMAGE_VERSION`, and hostname;
+ * owner and mode (never contents) of the secret paths
+   (`/etc/wireguard`, `/var/lib/iwd`, `/root/.ssh`, `/etc/arch-iso`,
+   SSH host private keys) and of our overlay files and enable symlinks;
+ * `PASS`, or `FAIL` (exit 1) listing any regular file under a secret
+   path that is not `0/0` or has group/other permission bits.
+
+Bugs found while writing it: the path regex was anchored after a space
+(matched nothing); a non-matching `grep` aborted the script under
+`pipefail`; symlink lines end in `-> target`, so the path is field 6
+(not the last field) and the path must also be allowed to end at a
+space. The FAIL filter was checked against sample lines (group-readable,
+non-root owner, world-readable) and flags each of them.
+
+Output on the current ISO: all secrets `0/0` mode 600 in 700 dirs
+(including `/etc/arch-iso/webhook.env`, now that `WEBHOOK_URL` is set),
+both enable symlinks present, `PASS`.
