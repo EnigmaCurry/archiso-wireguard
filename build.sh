@@ -71,7 +71,8 @@ stage_profile() {
     cat >>"${PROFILE}/profiledef.sh" <<'EOF'
 
 # --- archiso-wireguard ---
-iso_name="arch-iso"
+# The ISO contains secrets: make that obvious in its filename.
+iso_name="arch-iso-CONTAINS-SECRETS"
 EOF
 }
 

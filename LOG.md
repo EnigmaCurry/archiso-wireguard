@@ -122,7 +122,7 @@ secrets/
     `PersistentKeepalive` (needed so the peer can reach us through NAT).
  2. Generate SSH host keys into `secrets/ssh/host/` if missing.
  3. Copy releng to `secrets/build/profile/`, overlay `airootfs/`, append
-    `packages.extra`, set `iso_name="arch-iso"`.
+    `packages.extra`, set `iso_name="arch-iso-CONTAINS-SECRETS"`.
  4. Install each secret into the profile's airootfs and append a
     `file_permissions` entry for it to `profiledef.sh`.
  5. Run `mkarchiso -v -w secrets/build/work -o secrets/out` rootless.
@@ -196,3 +196,13 @@ Filename is the SSID as-is if it contains only letters, digits, space,
 Tested in a scratch copy with no secrets (templates created, second run
 overwrites nothing, build rejects each unfilled template), then rebuilt
 with the real secrets: one WiFi network baked in at `0/0 600`.
+
+## Tag the ISO filename with CONTAINS-SECRETS
+
+`build.sh` sets `iso_name="arch-iso-CONTAINS-SECRETS"`, so the output is
+`secrets/out/arch-iso-CONTAINS-SECRETS-<date>-x86_64.iso`.
+
+In mkarchiso, `iso_name` only feeds the output filename, `NAME=` in the
+GRUB environment blocks, and `IMAGE_ID=` in the live system's
+`/etc/os-release`, so the tag is also visible from inside the booted
+ISO. Boot labels and the ISO volume label (`ARCH_YYYYMM`) are unchanged.
