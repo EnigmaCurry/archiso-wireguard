@@ -347,3 +347,17 @@ tmpfiles recreates it at boot).
  * Compared `unsquashfs -lln` of the container-built ISO with the
    previous native build: same 99458 paths with identical owner, group
    and mode for every one.
+
+## Remove host packages the build no longer uses
+
+```
+sudo pacman -Rns archiso wireguard-tools qemu-base
+```
+
+Removes those three plus 33 dependencies nothing else needs (qemu
+system/firmware, squashfs-tools, libisoburn, mtools, erofs-utils, ...).
+The host now has only `podman` and `just` for the build.
+
+Rebuilt with `just build` after the removal: succeeded in ~3 minutes.
+Note: `unsquashfs` (squashfs-tools) is gone from the host too, so the
+ISO inspection commands logged earlier now need to run in a container.
