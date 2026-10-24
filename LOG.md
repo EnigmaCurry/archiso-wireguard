@@ -408,3 +408,11 @@ The README's Podman one-liner for generating a WireGuard key pair
 without `wireguard-tools` on the host was tested. Before writing a
 public README, the git history was scanned for SSIDs, the webhook
 topic, private keys and IP addresses: none found.
+
+## `just keygen`
+
+README step 3 offered `wg genkey` on any host plus a Podman one-liner as
+a fallback. Streamlined to a single `just keygen` target that runs the
+Podman one-liner (same `archlinux` image as the build) and prints the
+private and public key; nothing is written to disk, so the README no
+longer needs to say to delete `iso.key`.

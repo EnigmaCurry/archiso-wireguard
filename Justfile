@@ -6,6 +6,11 @@ default:
 config:
     ./config.sh
 
+# Generate a new WireGuard key pair for the ISO (prints private and public key)
+keygen:
+    podman run --rm docker.io/library/archlinux:latest sh -c \
+      'pacman -Sy --noconfirm wireguard-tools >/dev/null && k=$(wg genkey) && echo "private: $k" && echo "public:  $(echo $k | wg pubkey)"'
+
 # Build the ISO (with secrets) into secrets/out/, inside a Podman container
 build:
     ./build.sh

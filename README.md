@@ -79,19 +79,10 @@ Fill them in as described in the next steps.
 
 ### 3. WireGuard
 
-Make a new key pair just for this ISO. Run this anywhere that has
-`wireguard-tools` installed (your WireGuard server will):
+Make a new key pair just for this ISO:
 
 ```
-wg genkey | tee iso.key | wg pubkey > iso.pub
-```
-
-If you don't have `wg` handy, use the same container image as the
-build:
-
-```
-podman run --rm docker.io/library/archlinux:latest sh -c \
-  'pacman -Sy --noconfirm wireguard-tools >/dev/null && k=$(wg genkey) && echo "private: $k" && echo "public:  $(echo $k | wg pubkey)"'
+just keygen
 ```
 
 Edit `secrets/wireguard/wg0.conf` and uncomment and fill in the
@@ -126,8 +117,6 @@ Then add the ISO as a peer **on your WireGuard server**, using the ISO's
 PublicKey = <the ISO's public key>
 AllowedIPs = 10.0.0.2/32
 ```
-
-Delete the `iso.key` file once the private key is in `wg0.conf`.
 
 ### 4. SSH
 
@@ -247,6 +236,7 @@ From there, install Arch as usual (`archinstall`, or the
 | Command | Does |
 |---|---|
 | `just config` | Create missing secret files as commented-out templates |
+| `just keygen` | Generate a WireGuard key pair for the ISO (in a Podman container) |
 | `just build` | Build the ISO into `secrets/out/` (in a Podman container) |
 | `just inspect [ISO]` | Show secrets/overlay files in an ISO and check permissions |
 | `just clean` | Remove the cached pacman packages volume |
