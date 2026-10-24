@@ -125,3 +125,28 @@ secrets/
     `file_permissions` entry for it to `profiledef.sh`.
  5. Run `mkarchiso -v -w secrets/build/work -o secrets/out` rootless.
  6. Remove `secrets/build/`.
+
+## First build (2026-10-24)
+
+```
+just build
+```
+
+ * First attempt failed: with no WiFi files, `/var/lib/iwd` did not
+   exist in the profile, and mkarchiso aborts on a `file_permissions`
+   entry for a missing path ("Outside of valid path"). Fix: `build.sh`
+   now creates every secret directory before registering it.
+ * Second attempt succeeded in ~3 minutes:
+   `secrets/out/arch-iso-2026.10.24-x86_64.iso` (1.6G). The
+   "Possibly missing firmware" warnings from mkinitcpio are normal.
+ * `build.sh` now also sets the ISO to mode 600.
+ * Verified inside the image without booting it:
+
+   ```
+   bsdtar -xf secrets/out/arch-iso-*.iso arch/x86_64/airootfs.sfs
+   unsquashfs -lln arch/x86_64/airootfs.sfs
+   ```
+
+   `/etc/wireguard` and `/root/.ssh` and `/var/lib/iwd` are `0/0 700`;
+   `wg0.conf`, `authorized_keys` and SSH host private keys are `0/0 600`;
+   hostname is `arch-iso`; `wg-quick@wg0.service` is enabled.

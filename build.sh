@@ -73,6 +73,8 @@ install_secret() {
 }
 
 secret_dir() {
+    # mkarchiso aborts on a file_permissions entry for a missing path.
+    mkdir -p "${PROFILE}/airootfs$1"
     printf 'file_permissions["%s"]="0:0:%s"\n' "$1" "$2" >>"${PROFILE}/profiledef.sh"
 }
 
@@ -110,6 +112,7 @@ main() {
     stage_profile
     stage_secrets
     mkarchiso -v -w "${WORK}" -o "${OUT}" "${PROFILE}"
+    chmod 600 "${OUT}"/*.iso
     clean_build
     echo
     echo "Built:"
