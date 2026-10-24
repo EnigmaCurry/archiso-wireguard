@@ -24,15 +24,26 @@ clean_build() {
     return 0
 }
 
+# iwd network files in secrets/wifi/ (other files, like templates, are ignored)
+wifi_networks() {
+    find "${SECRETS}/wifi" -maxdepth 1 -type f \
+        \( -name '*.psk' -o -name '*.open' -o -name '*.8021x' \) 2>/dev/null
+}
+
 check_secrets() {
+    local wg=${SECRETS}/wireguard/wg0.conf
     [[ -d ${RELENG} ]] || die "archiso is not installed (missing ${RELENG})"
-    [[ -f ${SECRETS}/wireguard/wg0.conf ]] || die "missing secrets/wireguard/wg0.conf"
+    [[ -f ${wg} ]] || die "missing secrets/wireguard/wg0.conf (run: just config)"
+    grep -qE '^\s*\[Interface\]' "${wg}" && grep -qiE '^\s*PrivateKey\s*=' "${wg}" \
+        || die "secrets/wireguard/wg0.conf is not filled in (no [Interface] PrivateKey)"
     # Without a keepalive, the peer cannot reach us through NAT until we
     # send traffic first, so SSH in over the VPN would not work.
-    grep -qiE '^\s*PersistentKeepalive\s*=' "${SECRETS}/wireguard/wg0.conf" \
+    grep -qiE '^\s*PersistentKeepalive\s*=' "${wg}" \
         || die "secrets/wireguard/wg0.conf has no PersistentKeepalive (add e.g. PersistentKeepalive = 25 to [Peer])"
-    [[ -s ${SECRETS}/ssh/authorized_keys ]] || die "missing secrets/ssh/authorized_keys"
-    compgen -G "${SECRETS}/wifi/*" >/dev/null \
+    [[ -f ${SECRETS}/ssh/authorized_keys ]] || die "missing secrets/ssh/authorized_keys (run: just config)"
+    grep -qvE '^\s*(#|$)' "${SECRETS}/ssh/authorized_keys" \
+        || die "secrets/ssh/authorized_keys has no keys (only comments)"
+    [[ -n $(wifi_networks) ]] \
         || echo "WARNING: no WiFi networks in secrets/wifi/ (wired only)" >&2
     chmod 700 "${SECRETS}"
 }
@@ -83,10 +94,9 @@ stage_secrets() {
 
     # WiFi: iwd network files (<SSID>.psk, .open, .8021x)
     secret_dir /var/lib/iwd 700
-    for f in "${SECRETS}"/wifi/*; do
-        [[ -f ${f} ]] || continue
+    while IFS= read -r f; do
         install_secret "${f}" "/var/lib/iwd/$(basename "${f}")" 600
-    done
+    done < <(wifi_networks)
 
     # WireGuard
     secret_dir /etc/wireguard 700

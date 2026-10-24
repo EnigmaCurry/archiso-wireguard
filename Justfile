@@ -2,6 +2,10 @@
 default:
     @just --list
 
+# Create missing secret files as commented-out templates
+config:
+    ./config.sh
+
 # Build the ISO (with secrets) into secrets/out/
 build:
     ./build.sh
