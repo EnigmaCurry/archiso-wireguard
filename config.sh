@@ -47,6 +47,16 @@ template "${SECRETS}/ssh/authorized_keys" <<'EOF'
 # ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@laptop
 EOF
 
+template "${SECRETS}/webhook.env" <<'EOF'
+# Webhook POSTed once at boot, after WireGuard connects (or fails to),
+# with a plain-text message (Content-Type: text/plain) listing the LAN,
+# public and WireGuard addresses, or the WireGuard error.
+# Works with e.g. a matrix-hookshot generic webhook. Leave commented out
+# to disable.
+#
+# WEBHOOK_URL=https://hookshot.example.com/webhook/abcdef
+EOF
+
 if [[ -n $(find "${SECRETS}/wifi" -maxdepth 1 -type f \( -name '*.psk' -o -name '*.open' -o -name '*.8021x' \)) ]]; then
     echo "exists:  secrets/wifi/ networks"
 else

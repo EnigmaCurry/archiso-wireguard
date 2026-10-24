@@ -45,6 +45,8 @@ check_secrets() {
         || die "secrets/ssh/authorized_keys has no keys (only comments)"
     [[ -n $(wifi_networks) ]] \
         || echo "WARNING: no WiFi networks in secrets/wifi/ (wired only)" >&2
+    webhook_enabled \
+        || echo "WARNING: no WEBHOOK_URL in secrets/webhook.env (webhook disabled)" >&2
     chmod 700 "${SECRETS}"
 }
 
@@ -73,7 +75,13 @@ stage_profile() {
 # --- archiso-wireguard ---
 # The ISO contains secrets: make that obvious in its filename.
 iso_name="arch-iso-CONTAINS-SECRETS"
+file_permissions["/usr/local/bin/arch-iso-webhook"]="0:0:755"
 EOF
+}
+
+# True if secrets/webhook.env sets WEBHOOK_URL (not just the template).
+webhook_enabled() {
+    grep -qE '^\s*WEBHOOK_URL=.+' "${SECRETS}/webhook.env" 2>/dev/null
 }
 
 # Copy a secret into the airootfs and register its permissions. mkarchiso
@@ -114,6 +122,12 @@ stage_secrets() {
         install_secret "${SECRETS}/ssh/host/ssh_host_${type}_key.pub" \
             "/etc/ssh/ssh_host_${type}_key.pub" 644
     done
+
+    # Boot webhook (arch-iso-webhook.service only runs if this exists)
+    if webhook_enabled; then
+        secret_dir /etc/arch-iso 700
+        install_secret "${SECRETS}/webhook.env" /etc/arch-iso/webhook.env 600
+    fi
 }
 
 main() {

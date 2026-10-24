@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Report this live system's addresses and WireGuard status to a webhook.
+#
+# Waits for a WireGuard handshake on wg0 (up to WG_HANDSHAKE_TIMEOUT
+# seconds), then POSTs a plain-text message to WEBHOOK_URL. The message
+# is sent even if WireGuard failed, and then includes the error.
+#
+# Usage: arch-iso-webhook [--dry-run]   (--dry-run prints instead of POSTing)
+set -uo pipefail
+
+WG_IF=${WG_IF:-wg0}
+WG_HANDSHAKE_TIMEOUT=${WG_HANDSHAKE_TIMEOUT:-120}
+PUBLIC_IP_URL=${PUBLIC_IP_URL:-https://ifconfig.me}
+DRY_RUN=false
+[[ ${1:-} == --dry-run ]] && DRY_RUN=true
+
+# Most recent handshake (unix time) with any peer, or 0 if none.
+latest_handshake() {
+    wg show "${WG_IF}" latest-handshakes 2>/dev/null | awk '$2 > max { max = $2 } END { print max + 0 }'
+}
+
+wait_for_handshake() {
+    local deadline=$((SECONDS + WG_HANDSHAKE_TIMEOUT))
+    while ((SECONDS < deadline)); do
+        (($(latest_handshake) > 0)) && return 0
+        sleep 2
+    done
+    return 1
+}
+
+# Interface holding the main table's default route. Use the main table
+# explicitly, so a full-tunnel WireGuard config doesn't hide the LAN.
+lan_dev() {
+    ip -4 route show table main default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }'
+}
+
+addresses() {
+    ip -o addr show dev "$1" scope global 2>/dev/null | awk '{ print $4 }' | paste -sd ' '
+}
+
+wireguard_status() {
+    local hs ago
+    if wait_for_handshake; then
+        hs=$(latest_handshake)
+        ago=$(($(date +%s) - hs))
+        echo "WireGuard: $(addresses "${WG_IF}") on ${WG_IF} (handshake ${ago}s ago)"
+        return
+    fi
+    echo "WireGuard: ERROR - no handshake on ${WG_IF} after ${WG_HANDSHAKE_TIMEOUT}s"
+    echo "  wg-quick@${WG_IF}: $(systemctl is-active "wg-quick@${WG_IF}" 2>&1)"
+    if ip link show "${WG_IF}" >/dev/null 2>&1; then
+        echo "  ${WG_IF} address: $(addresses "${WG_IF}")"
+        echo "  endpoint: $(wg show "${WG_IF}" endpoints 2>&1 | awk '{ print $2 }' | paste -sd ' ')"
+    else
+        echo "  ${WG_IF} interface does not exist"
+    fi
+    echo "  last log lines:"
+    journalctl -b -u "wg-quick@${WG_IF}" -n 5 -o cat --no-pager 2>&1 | sed 's/^/    /'
+}
+
+message() {
+    local dev public
+    dev=$(lan_dev)
+    echo "$(uname -n) is up ($(. /etc/os-release && echo "${IMAGE_ID:-?} ${IMAGE_VERSION:-}"))"
+    if [[ -n ${dev} ]]; then
+        echo "LAN: $(addresses "${dev}") on ${dev}"
+        public=$(curl -fsS --max-time 10 --interface "${dev}" "${PUBLIC_IP_URL}" 2>&1) \
+            || public="ERROR - ${public}"
+        echo "Public: ${public}"
+    else
+        echo "LAN: ERROR - no default route"
+    fi
+    wireguard_status
+}
+
+main() {
+    local msg
+    msg=$(message)
+    if ${DRY_RUN}; then
+        echo "${msg}"
+        return
+    fi
+    [[ -n ${WEBHOOK_URL:-} ]] || { echo "WEBHOOK_URL is not set" >&2; exit 1; }
+    echo "${msg}"
+    curl -fsS --max-time 15 --retry 30 --retry-delay 10 --retry-all-errors \
+        -H 'Content-Type: text/plain; charset=utf-8' \
+        --data-binary "${msg}" "${WEBHOOK_URL}"
+}
+
+main "$@"
