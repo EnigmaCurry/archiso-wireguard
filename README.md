@@ -46,7 +46,8 @@ sudo pacman -S --needed podman just git
 ```
 
 You also need a **WireGuard peer** (a server, router, or VPN hub) with a
-public IP or DNS name that the ISO can connect to.
+public IP or DNS name that the ISO can connect to, unless you build
+without WireGuard (see step 3).
 
 ## Bootstrap
 
@@ -69,7 +70,7 @@ to run again.
 
 ```
 secrets/
-  wireguard/wg0.conf          # WireGuard config (required)
+  wireguard/wg0.conf          # WireGuard config (optional)
   ssh/authorized_keys         # SSH public keys allowed in as root (required)
   wifi/EXAMPLE.psk.example    # WiFi network template (optional)
   webhook.env                 # boot webhook URL (optional)
@@ -77,7 +78,11 @@ secrets/
 
 Fill them in as described in the next steps.
 
-### 3. WireGuard
+### 3. WireGuard (optional)
+
+To build without WireGuard, leave `secrets/wireguard/wg0.conf` empty
+or fully commented out and skip to step 4. The ISO then only has SSH
+on the LAN, and the webhook reports `WireGuard: not configured`.
 
 Make a new key pair just for this ISO:
 
@@ -191,7 +196,8 @@ The ISO is written to
 `secrets/out/arch-iso-CONTAINS-SECRETS-<date>-x86_64.iso`.
 
 The build refuses to start if a required secret is missing or still a
-template, and warns if there is no WiFi network or webhook.
+template, and warns if there is no WireGuard config, WiFi network or
+webhook.
 
 ### 8. Check the ISO
 
@@ -221,6 +227,9 @@ minute or two), SSH in over the VPN:
 ```
 ssh root@10.0.0.2
 ```
+
+Without WireGuard, SSH to the LAN address from the webhook (or from
+`ip addr` on the console) instead.
 
 To confirm the host key on first connect, compare with:
 

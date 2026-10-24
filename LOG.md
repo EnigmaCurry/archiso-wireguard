@@ -416,3 +416,16 @@ a fallback. Streamlined to a single `just keygen` target that runs the
 Podman one-liner (same `archlinux` image as the build) and prints the
 private and public key; nothing is written to disk, so the README no
 longer needs to say to delete `iso.key`.
+
+## Optional WireGuard
+
+A missing, empty or fully commented-out `secrets/wireguard/wg0.conf`
+now builds an ISO without WireGuard instead of failing: `build.sh`
+warns, skips installing `/etc/wireguard/wg0.conf`, and removes the
+overlay's `wg-quick@wg0.service` enable link from the staged profile
+(otherwise the unit would fail at boot with no config). A config with
+any uncommented line gets the same checks as before (`[Interface]`,
+`PrivateKey`, `PersistentKeepalive`). `wireguard-tools` stays in the
+package list. The webhook checks for `/etc/wireguard/wg0.conf` and
+reports `WireGuard: not configured` without waiting for a handshake.
+The `config.sh` template now says so, and points at `just keygen`.

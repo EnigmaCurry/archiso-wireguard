@@ -23,8 +23,9 @@ chmod 700 "${SECRETS}" "${SECRETS}"/{wifi,wireguard,ssh}
 
 template "${SECRETS}/wireguard/wg0.conf" <<'EOF'
 # WireGuard config for this image, in wg-quick(8) format.
-# The private key should be unique to this image: wg genkey | tee priv | wg pubkey
-# Uncomment and fill in:
+# The private key should be unique to this image: just keygen
+# Uncomment and fill in, or leave it all commented out to build without
+# WireGuard:
 #
 # [Interface]
 # PrivateKey = <this image's private key>

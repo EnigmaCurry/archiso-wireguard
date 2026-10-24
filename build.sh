@@ -32,15 +32,25 @@ wifi_networks() {
         \( -name '*.psk' -o -name '*.open' -o -name '*.8021x' \) 2>/dev/null
 }
 
+# True if secrets/wireguard/wg0.conf has anything besides comments and
+# blank lines. A missing, empty or fully commented-out config builds an
+# ISO without WireGuard.
+wireguard_enabled() {
+    grep -qvE '^\s*(#|$)' "${SECRETS}/wireguard/wg0.conf" 2>/dev/null
+}
+
 check_secrets() {
     local wg=${SECRETS}/wireguard/wg0.conf
-    [[ -f ${wg} ]] || die "missing secrets/wireguard/wg0.conf (run: just config)"
-    grep -qE '^\s*\[Interface\]' "${wg}" && grep -qiE '^\s*PrivateKey\s*=' "${wg}" \
-        || die "secrets/wireguard/wg0.conf is not filled in (no [Interface] PrivateKey)"
-    # Without a keepalive, the peer cannot reach us through NAT until we
-    # send traffic first, so SSH in over the VPN would not work.
-    grep -qiE '^\s*PersistentKeepalive\s*=' "${wg}" \
-        || die "secrets/wireguard/wg0.conf has no PersistentKeepalive (add e.g. PersistentKeepalive = 25 to [Peer])"
+    if wireguard_enabled; then
+        grep -qE '^\s*\[Interface\]' "${wg}" && grep -qiE '^\s*PrivateKey\s*=' "${wg}" \
+            || die "secrets/wireguard/wg0.conf is not filled in (no [Interface] PrivateKey)"
+        # Without a keepalive, the peer cannot reach us through NAT until we
+        # send traffic first, so SSH in over the VPN would not work.
+        grep -qiE '^\s*PersistentKeepalive\s*=' "${wg}" \
+            || die "secrets/wireguard/wg0.conf has no PersistentKeepalive (add e.g. PersistentKeepalive = 25 to [Peer])"
+    else
+        echo "WARNING: secrets/wireguard/wg0.conf is missing, empty or commented out (no WireGuard)" >&2
+    fi
     [[ -f ${SECRETS}/ssh/authorized_keys ]] || die "missing secrets/ssh/authorized_keys (run: just config)"
     grep -qvE '^\s*(#|$)' "${SECRETS}/ssh/authorized_keys" \
         || die "secrets/ssh/authorized_keys has no keys (only comments)"
@@ -108,9 +118,13 @@ stage_secrets() {
         install_secret "${f}" "/var/lib/iwd/$(basename "${f}")" 600
     done < <(wifi_networks)
 
-    # WireGuard
-    secret_dir /etc/wireguard 700
-    install_secret "${SECRETS}/wireguard/wg0.conf" /etc/wireguard/wg0.conf 600
+    # WireGuard, or drop the overlay's wg-quick@wg0 enable link without it
+    if wireguard_enabled; then
+        secret_dir /etc/wireguard 700
+        install_secret "${SECRETS}/wireguard/wg0.conf" /etc/wireguard/wg0.conf 600
+    else
+        rm "${PROFILE}/airootfs/etc/systemd/system/multi-user.target.wants/wg-quick@wg0.service"
+    fi
 
     # SSH client keys allowed to log in as root
     secret_dir /root/.ssh 700
