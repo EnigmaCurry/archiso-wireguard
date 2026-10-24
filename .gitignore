@@ -1,3 +1,8 @@
 # Secrets, the transient build dir, and ISOs built from them.
 # Never commit these.
 /secrets/
+
+# WireGuard key files from `wg genkey | tee iso.key | wg pubkey > iso.pub`
+# (older README instructions; `just keygen` writes no files).
+/iso.key
+/iso.pub
