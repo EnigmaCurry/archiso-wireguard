@@ -393,3 +393,18 @@ non-root owner, world-readable) and flags each of them.
 Output on the current ISO: all secrets `0/0` mode 600 in 700 dirs
 (including `/etc/arch-iso/webhook.env`, now that `WEBHOOK_URL` is set),
 both enable symlinks present, `PASS`.
+
+## README
+
+Added `README.md` for users: what the ISO does, the secrets warning,
+requirements (rootless Podman with subuid/subgid, just), and a bootstrap
+walkthrough: `just config`, WireGuard key pair per ISO (plus the peer
+entry on the server), `authorized_keys`, WiFi `.psk` files, optional
+webhook, `just build`, `just inspect`, `dd` to USB, SSH in over the VPN
+and verify the host key. Also: command table, what to do if the ISO is
+lost, and how it works.
+
+The README's Podman one-liner for generating a WireGuard key pair
+without `wireguard-tools` on the host was tested. Before writing a
+public README, the git history was scanned for SSIDs, the webhook
+topic, private keys and IP addresses: none found.
