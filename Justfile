@@ -6,10 +6,10 @@ default:
 config:
     ./config.sh
 
-# Build the ISO (with secrets) into secrets/out/
+# Build the ISO (with secrets) into secrets/out/, inside a Podman container
 build:
     ./build.sh
 
-# Delete the transient build directory (keeps secrets and built ISOs)
+# Remove the container's cached pacman packages (next build re-downloads)
 clean:
-    [ ! -e secrets/build ] || unshare --map-auto --map-root-user -- rm -rf -- secrets/build
+    podman volume rm --force archiso-wireguard-pacman-cache

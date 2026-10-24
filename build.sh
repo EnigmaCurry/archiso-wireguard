@@ -1,28 +1,30 @@
 #!/usr/bin/env bash
 # Build the arch-iso live ISO with secrets baked in.
 #
-# Copies archiso's stock releng profile, lays this repo's airootfs/ overlay
-# and the git-ignored secrets/ on top, then runs mkarchiso (rootless).
-# The resulting ISO contains secrets and is written to secrets/out/.
+# On the host, this checks the secrets and re-runs itself inside an Arch
+# Linux container with Podman, with the repo bind-mounted at /build.
+# Inside the container, it installs archiso, copies the stock releng
+# profile, lays this repo's airootfs/ overlay and the git-ignored secrets/
+# on top, and runs mkarchiso. The ISO contains secrets and is written to
+# secrets/out/.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RELENG=/usr/share/archiso/configs/releng
 SECRETS="${ROOT}/secrets"
-BUILD="${SECRETS}/build"
-PROFILE="${BUILD}/profile"
-WORK="${BUILD}/work"
 OUT="${SECRETS}/out"
 SSH_HOST_KEY_TYPES=(ed25519 ecdsa rsa)
 
-die() { echo "ERROR: $*" >&2; exit 1; }
+IMAGE=${ARCHISO_IMAGE:-docker.io/library/archlinux:latest}
+# Named volume for the container's pacman cache, so rebuilds don't
+# re-download every package. It holds packages only, no secrets.
+PACMAN_CACHE_VOLUME=archiso-wireguard-pacman-cache
+# Staging and work dirs live in the container and vanish with it.
+BUILD=/tmp/archiso-build
+PROFILE="${BUILD}/profile"
+WORK="${BUILD}/work"
 
-# mkarchiso runs in a user namespace, so the work dir holds files owned by
-# subordinate uids that only the namespace's root can delete.
-clean_build() {
-    [[ -e ${BUILD} ]] && unshare --map-auto --map-root-user -- rm -rf -- "${BUILD}"
-    return 0
-}
+die() { echo "ERROR: $*" >&2; exit 1; }
 
 # iwd network files in secrets/wifi/ (other files, like templates, are ignored)
 wifi_networks() {
@@ -32,7 +34,6 @@ wifi_networks() {
 
 check_secrets() {
     local wg=${SECRETS}/wireguard/wg0.conf
-    [[ -d ${RELENG} ]] || die "archiso is not installed (missing ${RELENG})"
     [[ -f ${wg} ]] || die "missing secrets/wireguard/wg0.conf (run: just config)"
     grep -qE '^\s*\[Interface\]' "${wg}" && grep -qiE '^\s*PrivateKey\s*=' "${wg}" \
         || die "secrets/wireguard/wg0.conf is not filled in (no [Interface] PrivateKey)"
@@ -130,18 +131,60 @@ stage_secrets() {
     fi
 }
 
-main() {
-    check_secrets
+# Host side: re-run this script in a throwaway Arch container. Rootless
+# Podman maps container root to the invoking user, so everything written
+# to the bind mount is owned by that user. --privileged is needed for
+# pacstrap's mounts. Secrets are only bind-mounted, never put in an image.
+run_container() {
+    command -v podman >/dev/null || die "podman is not installed"
+    podman run --rm --privileged \
+        --volume "${ROOT}:/build" \
+        --volume "${PACMAN_CACHE_VOLUME}:/var/cache/pacman/pkg" \
+        --env ARCHISO_WIREGUARD_IN_CONTAINER=1 \
+        "${IMAGE}" /build/build.sh
+}
+
+# As root, pacstrap mounts a devtmpfs, which a rootless container can't.
+# As a regular user, mkarchiso runs pacstrap in unshare mode (-N), which
+# only needs bind/proc/tmpfs mounts. So mkarchiso runs as "builder" in a
+# nested user namespace.
+setup_builder() {
+    useradd --create-home --uid 1000 builder
+    # Rootless Podman gives the container uids/gids 0-65536. Map those
+    # above builder's own into its namespace (as uids 1-64536, which
+    # includes nobody=65534). Container root is left out: mapping uid 0
+    # would also need CAP_SETFCAP.
+    printf 'builder:1001:64536\n' | tee /etc/subuid >/etc/subgid
+    # The image doesn't keep file capabilities, which these need.
+    setcap cap_setuid=ep /usr/bin/newuidmap
+    setcap cap_setgid=ep /usr/bin/newgidmap
+    chown -R builder: /var/cache/pacman/pkg "${BUILD}"
+}
+
+# Container side: install archiso and build. Files builder creates would
+# show up on the host with a subordinate uid, so builder only writes inside
+# the container and root copies the ISO out (owned by the host user).
+build_iso() {
+    pacman -Syu --noconfirm --needed archiso openssh
+    [[ -d ${RELENG} ]] || die "archiso is not installed (missing ${RELENG})"
     ensure_host_keys
-    clean_build
     stage_profile
     stage_secrets
-    mkarchiso -v -w "${WORK}" -o "${OUT}" "${PROFILE}"
-    chmod 600 "${OUT}"/*.iso
-    clean_build
+    setup_builder
+    runuser -u builder -- mkarchiso -v -w "${WORK}" -o "${BUILD}/out" "${PROFILE}"
+    install -m 600 "${BUILD}"/out/*.iso "${OUT}/"
     echo
     echo "Built:"
     ls -lh "${OUT}"/*.iso
+}
+
+main() {
+    check_secrets
+    if [[ -n ${ARCHISO_WIREGUARD_IN_CONTAINER:-} ]]; then
+        build_iso
+    else
+        run_container
+    fi
 }
 
 main "$@"
