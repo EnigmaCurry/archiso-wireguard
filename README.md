@@ -130,17 +130,24 @@ Instead of editing by hand, you can keep the files in the repo and copy
 them over:
 
 ```
-just config                                  # create secrets/ templates
-$EDITOR secrets/...                          # fill them in
-just provision /run/media/you/ARCH_CONFIG    # copy them to the stick
+just config          # create secrets/ templates
+$EDITOR secrets/...  # fill them in
+just provision       # copy them to the stick
 ```
 
-`just provision` checks the files before copying (a `wg0.conf` without a
-`PersistentKeepalive`, an `authorized_keys` with no key) so a typo fails
-here instead of leaving a headless machine unreachable. Its argument may
-be a mounted config partition, a `/dev/sdX` device, or an image in
-`out/` you are about to write; with no argument it uses the newest image
-in `out/`.
+With no argument, `just provision` writes to whichever filesystem
+labelled `ARCH_CONFIG` is mounted — i.e. the stick you just plugged in,
+wherever your desktop automounted it. If it isn't mounted it says where
+it found it instead of guessing.
+
+It checks the files before copying (a `wg0.conf` without a
+`PersistentKeepalive`, an `authorized_keys` with no key), so a typo
+fails here instead of leaving a headless machine unreachable.
+
+You can also name a target: a mount point, an unmounted `/dev/sdX`
+(needs root), or an image in `out/` you are about to write. That last
+one bakes your secrets into the image file, which stops being the
+generic thing it was built as — `just inspect` will tell you so.
 
 ### 5. Boot and connect
 

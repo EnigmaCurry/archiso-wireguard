@@ -946,3 +946,23 @@ from releng's memdisk hook.
 
 Still untested: booting the usb image on real hardware (both halves),
 and the rpi5-only target on this host.
+
+## `just provision` defaults to the stick, not an image (2026-10-24)
+
+The no-argument default was the newest image in `out/`, which is the
+wrong end of the pipeline: the documented flow is build -> dd -> edit
+the stick, and provisioning the image instead silently turns a generic
+image into one carrying secrets.
+
+With no argument it now finds the stick:
+`findmnt -rn -o TARGET -S LABEL=ARCH_CONFIG` picks up whatever a
+desktop automounter left at e.g. `/run/media/you/ARCH_CONFIG`. If the
+label exists but is not mounted, `blkid -L` reports where it is instead
+of guessing. Naming a target explicitly still works for a mount point,
+a `/dev` node or an image, and the image case now says the image is no
+longer generic.
+
+Tested: no stick -> the error names what to do; a mounted stick (stubbed
+`findmnt`, since nothing on the dev host carries a filesystem label) ->
+`archiso-config/` written to it, including an SSID with a space; an
+explicit `.img` -> written via mtools with the not-generic warning.

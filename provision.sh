@@ -2,11 +2,14 @@
 # Copy secrets/ onto a stick's config partition, as archiso-config/.
 #
 # Usage: provision.sh [TARGET]
-#   (default)      the newest image in out/
-#   <image>.img    a built image, before it is written to a stick
-#   /dev/sdX       a stick (or /dev/sdX1, its FAT partition)
+#   (default)      the mounted config partition of a stick, found by its
+#                  ARCH_CONFIG filesystem label
 #   <directory>    an already-mounted config partition, e.g.
 #                  /run/media/you/ARCH_CONFIG
+#   /dev/sdX       a stick (or /dev/sdX1, its FAT partition), unmounted
+#   <image>.img    a built image, before it is written to a stick. The
+#                  image then contains your secrets and is no longer
+#                  the generic thing it was built as.
 #
 # The files are checked first, with the same rules the build used to
 # apply, so a typo fails here instead of silently leaving a headless
@@ -23,6 +26,9 @@ SECRETS="${ROOT}/secrets"
 TEMPLATES="${ROOT}/config-templates"
 OUT="${ROOT}/out"
 CONFIG_DIR=archiso-config
+# Filesystem label build.sh gives the config partition, and how a
+# written stick is found again here.
+FAT_LABEL=${FAT_LABEL:-ARCH_CONFIG}
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 warn() { echo "WARNING: $*" >&2; }
@@ -55,6 +61,21 @@ check_config() {
     [[ -n $(wifi_networks) ]] || warn "no WiFi networks in secrets/wifi/ (wired only)"
     grep -qE '^\s*WEBHOOK_URL=.+' "${SECRETS}/webhook.env" 2>/dev/null \
         || warn "no WEBHOOK_URL in secrets/webhook.env (webhook disabled)"
+}
+
+# With no argument: the stick. A written stick's config partition is
+# labelled ARCH_CONFIG, so look for it mounted (which is what a desktop
+# automounter leaves behind), and failing that say where it is.
+find_target() {
+    local mnt dev
+    mnt=$(findmnt -rn -o TARGET -S "LABEL=${FAT_LABEL}" 2>/dev/null | head -1)
+    if [[ -n ${mnt} ]]; then
+        echo "${mnt}"
+        return
+    fi
+    dev=$(blkid -L "${FAT_LABEL}" 2>/dev/null) || true
+    [[ -n ${dev} ]] && die "${FAT_LABEL} is on ${dev} but not mounted: mount it and try again, or pass ${dev} (needs root)"
+    die "no mounted ${FAT_LABEL} filesystem: plug in a stick written from out/, or name a target (a mount point, a /dev node, or an image)"
 }
 
 # What gets copied: everything in secrets/, plus the README for whoever
@@ -173,18 +194,16 @@ main() {
         return
     fi
     check_config
-    if [[ -z ${target} ]]; then
-        target=$(ls -t "${OUT}"/*.img 2>/dev/null | head -1) \
-            || die "no image in out/ (run: just build, just build-rpi5 or just build-usb)"
-        [[ -n ${target} ]] || die "no image in out/ (run: just build, just build-rpi5 or just build-usb)"
-        echo "Target: ${target#"${ROOT}"/}"
-    fi
+    [[ -n ${target} ]] || target=$(find_target)
+    echo "Target: ${target#"${ROOT}"/}"
     if [[ -d ${target} ]]; then
         provision_dir "${target}"
+        echo "Unmount the stick and boot it."
     else
         provision_mtools "${target}"
+        [[ -b ${target} ]] && echo "Unplug the stick and boot it." \
+            || echo "This image is no longer generic: write it to a stick (and don't publish it)."
     fi
-    echo "Boot it, or write the image to a stick."
 }
 
 main "$@"
