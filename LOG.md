@@ -429,3 +429,112 @@ any uncommented line gets the same checks as before (`[Interface]`,
 package list. The webhook checks for `/etc/wireguard/wg0.conf` and
 reports `WireGuard: not configured` without waiting for a handshake.
 The `config.sh` template now says so, and points at `just keygen`.
+
+## Raspberry Pi 5 target (`just build-rpi5`)
+
+Goal: the same live installer for a Raspberry Pi 5 whose NVMe drive is
+hard to take out. Boot it from a USB stick or SD card, SSH in over the
+VPN, and `pacstrap` Arch Linux ARM (ALARM) onto the NVMe. Same repo,
+same `secrets/` (one WireGuard key and one set of SSH host keys: both
+images are "the arch-iso installer"). Built on an Apple Silicon Mac, so
+the arm64 build runs natively.
+
+Decisions:
+
+ * **archiso, not Alpine.** archiso 91 supports aarch64 (releng ships
+   `packages.aarch64`), and its initcpio hooks (`mkinitcpio-archiso`,
+   packaged by ALARM) are arch-independent: they find the boot device
+   by label or UUID, mount `${archisobasedir}/$(uname -m)/airootfs.sfs`,
+   and copy it to RAM when it is < 4 GiB and RAM > image + 2 GiB. So
+   the live system is Arch with systemd like the ISO, `airootfs/` and
+   the secrets staging are reused unchanged, and installing is
+   `pacstrap`.
+ * **No boot loader.** The Pi 5 firmware lives in its EEPROM and boots
+   a FAT partition directly (`config.txt`, `kernel8.img`, initramfs,
+   DTBs, `cmdline.txt`). mkarchiso runs in **netboot** mode, which
+   stops after kernel + initramfs + `airootfs.sfs`; `build.sh` packs
+   those and the airootfs's `/boot` into an MBR disk image with one
+   FAT32 (LBA, bootable) partition at 1 MiB.
+ * **Kernel `linux-rpi-16k`** (Raspberry Pi Foundation fork, 16K pages,
+   bcm2712 only). ALARM's generic `linux-aarch64` boots via U-Boot and
+   does not support the Pi 5. The package installs `kernel8.img` and a
+   `config.txt` with `initramfs initramfs-linux.img followkernel`.
+ * **Boot partition lookup:** a random FAT volume ID per build,
+   passed as `archisosearchuuid=XXXX-XXXX` in `cmdline.txt` (plus the
+   `/boot/XXXX-XXXX.uuid` search file), like the ISO's search UUID.
+ * **Build container:** there is no official ALARM image. `build.sh`
+   downloads `ArchLinuxARM-aarch64-latest.tar.gz` once, verifies its
+   signature in a throwaway Debian container against the pinned ALARM
+   build key `68B3537F39A313B3E574D06777193F152BDBE6A6`, and imports
+   it as `localhost/archlinuxarm:latest`. ALARM doesn't package
+   archiso, so Arch's (arch `any`) is installed with `pacman -U` from
+   the URL that `archlinux.org/packages/extra/any/archiso/download/`
+   redirects to (signature checked with ALARM's `archlinux-keyring`).
+ * **Package list:** releng's `packages.aarch64` + `packages.extra` +
+   `packages.rpi5` (which also removes `linux`, `linux-dtbs`, `stubble`,
+   `grub`, `edk2-shell`, `efibootmgr` and adds `linux-rpi-16k`,
+   `firmware-raspberrypi`, `rpi5-eeprom`, `raspberrypi-utils`).
+   Anything ALARM doesn't have is skipped with a message (currently
+   only `ghostty-terminfo`).
+ * Each target refuses to build on a Podman host of the other
+   architecture (emulation would take hours).
+
+Setup on the Mac (2026-10-24):
+
+```
+brew install podman            # 6.1.4
+podman machine init --cpus 4 --memory 3072 --disk-size 60
+podman machine start           # Fedora CoreOS VM, arm64, rootless
+```
+
+The VM maps container uids 0-1000000, so `setup_builder`'s
+`builder:1001:64536` subuid range works as on Linux.
+
+### Problems hit and fixes
+
+ * **`config.sh` failed on macOS:** BSD `install` can't read
+   `/dev/stdin`. Now `mkdir -p` + `cat` under `umask 077`.
+ * **pacman's download sandbox** (Landlock + `DownloadUser = alpm`)
+   fails in an unprivileged container. The build container already
+   runs `--privileged`, where it works; for pacstrap in builder's
+   nested namespace the profile's `pacman.conf` (a copy of ALARM's)
+   sets `DisableSandbox` and comments out `DownloadUser`. `inspect.sh`
+   uses `pacman --disable-sandbox`.
+ * **mkarchiso expects `/boot/vmlinuz-*`.** A build-only pacman hook
+   (`rpi5/airootfs/etc/pacman.d/hooks/90-archiso-rpi-vmlinuz.hook`,
+   marked `# remove from airootfs!` so releng's zzzz99 hook deletes
+   it) copies `kernel8.img` to `vmlinuz-linux-rpi-16k`. The copy is
+   left off the FAT partition.
+ * **`useradd: UID 1000 is not unique`:** the ALARM rootfs has an
+   `alarm` user with uid 1000. Removed in the container before
+   `setup_builder`.
+ * Sourcing `profiledef.sh` for the image name needs `declare -A
+   file_permissions` first (it assigns string keys).
+ * The disk image is assembled without loop devices: `mkfs.vfat -C`
+   into a file, `mcopy -s`, `sfdisk` on the image file, `dd` the FAT in
+   at 1 MiB.
+
+### Verification (test secrets in a scratch copy: throwaway SSH key, no WireGuard/WiFi/webhook)
+
+ * `./build.sh rpi5` succeeded in ~10 minutes (first run of the final
+   version; package cache warm from an earlier attempt). Most of it is
+   xz-compressing the squashfs (~75k inodes). Output:
+   `arch-rpi5-CONTAINS-SECRETS-2026.10.24-aarch64.img`, 1.2 GB,
+   `airootfs.sfs` ~1 GB.
+ * `just inspect` on the `.img`: `IMAGE_ID=arch-rpi5-CONTAINS-SECRETS`,
+   hostname `arch-iso`, all secrets `0/0` 600 in 700 dirs, `PASS`.
+ * Partition table: one bootable type `c` partition from sector 2048.
+ * Boot partition: `kernel8.img`, `initramfs-linux.img`, `config.txt`,
+   `cmdline.txt`, `overlays/`, all `bcm2712*` DTBs (including
+   `bcm2712d0-rpi-5-b.dtb` for D0 boards), `arch/aarch64/airootfs.sfs`
+   + `.sha512`; no `vmlinuz-*`.
+ * Initramfs (xz) contains the `archiso`, `archiso_loop_mnt`, PXE and
+   `memdisk` hooks plus `squashfs` and `overlay` modules. USB storage,
+   UAS, FAT/VFAT, NVMe, PCIe (`pcie-brcmstb`), xhci and dwc3 are
+   built into `linux-rpi-16k`.
+ * Live system has `linux-rpi-16k 6.18.57`, `firmware-raspberrypi`,
+   `linux-firmware-broadcom` (brcmfmac43455 + Pi 5 nvram), `iwd`,
+   `wireguard-tools`, `openssh`, `arch-install-scripts`, `rpi5-eeprom`,
+   `raspberrypi-utils`; `/etc/pacman.d/hooks/` is empty after build.
+ * **Not yet tested:** booting it on a Pi 5, and the x86_64 target after
+   the `build.sh` changes (no x86_64 Podman host here).

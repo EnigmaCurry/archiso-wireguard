@@ -13,7 +13,9 @@ template() {
         echo "exists:  ${dest#"${ROOT}"/}"
         cat >/dev/null
     else
-        install -D -m 600 /dev/stdin "${dest}"
+        # Not install -D /dev/stdin: macOS's install can't read a pipe.
+        mkdir -p "$(dirname "${dest}")"
+        (umask 077 && cat >"${dest}")
         echo "created: ${dest#"${ROOT}"/}  (edit it)"
     fi
 }

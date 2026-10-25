@@ -1,0 +1,21 @@
+# Changes to releng's packages.aarch64 for the Raspberry Pi 5 (rpi5 target).
+# "-name" removes a package from it, any other line adds one.
+# packages.extra is added too. Packages Arch Linux ARM doesn't have are
+# skipped with a message.
+
+# Generic arm64 kernel and UEFI boot pieces: the Pi 5 uses the Raspberry
+# Pi Foundation kernel, booted directly by its firmware.
+-linux
+-linux-dtbs
+-stubble
+-grub
+-edk2-shell
+-efibootmgr
+
+# Pi 5 kernel (16K pages, bcm2712 only) and firmware
+linux-rpi-16k
+firmware-raspberrypi
+# rpi-eeprom-config / rpi-eeprom-update, e.g. to set BOOT_ORDER
+rpi5-eeprom
+# vcgencmd, pinctrl
+raspberrypi-utils

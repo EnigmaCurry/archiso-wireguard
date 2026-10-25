@@ -13,12 +13,16 @@ keygen:
 
 # Build the ISO (with secrets) into secrets/out/, inside a Podman container
 build:
-    ./build.sh
+    ./build.sh x86_64
 
-# List secrets and overlay files in an ISO (owner/mode only) and check secrets are root-only
-inspect *iso:
-    ./inspect.sh {{iso}}
+# Build the Raspberry Pi 5 USB/SD image (with secrets) into secrets/out/ (needs an arm64 Podman host)
+build-rpi5:
+    ./build.sh rpi5
 
-# Remove the container's cached pacman packages (next build re-downloads)
+# List secrets and overlay files in an ISO or .img (owner/mode only) and check secrets are root-only
+inspect *image:
+    ./inspect.sh {{image}}
+
+# Remove the containers' cached pacman packages (next build re-downloads)
 clean:
-    podman volume rm --force archiso-wireguard-pacman-cache
+    podman volume rm --force archiso-wireguard-pacman-cache archiso-wireguard-pacman-cache-rpi5

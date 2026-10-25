@@ -240,6 +240,78 @@ ssh-keygen -lf secrets/ssh/host/ssh_host_ed25519_key.pub
 From there, install Arch as usual (`archinstall`, or the
 [installation guide](https://wiki.archlinux.org/title/Installation_guide)).
 
+## Raspberry Pi 5
+
+`just build-rpi5` builds the same live environment for the Raspberry
+Pi 5, from [Arch Linux ARM](https://archlinuxarm.org/), as a disk image
+for a USB stick or SD card. It is for installing to a Pi 5 whose NVMe
+drive you can't easily take out: boot the stick, SSH in over the VPN,
+and install to `/dev/nvme0n1` with `pacstrap`.
+
+It uses the same `secrets/` (WiFi, WireGuard key, SSH keys, webhook) as
+the x86_64 ISO, so both images are "the arch-iso installer" on your VPN
+and present the same host key. Don't boot both at once: they would fight
+over the WireGuard peer address.
+
+Requirements: a **native arm64** Podman host, such as a Mac with Apple
+Silicon or an arm64 Linux machine. Building the Pi image on x86_64 (or
+the ISO on arm64) would need CPU emulation and is refused.
+
+On macOS:
+
+```
+brew install podman just
+podman machine init --cpus 4 --memory 3072
+podman machine start
+```
+
+Then, after the bootstrap steps 2-6 above:
+
+```
+just build-rpi5
+just inspect
+```
+
+The first build downloads the Arch Linux ARM rootfs (about 830 MB),
+checks its signature, and imports it as the `localhost/archlinuxarm`
+Podman image. The image is written to
+`secrets/out/arch-rpi5-CONTAINS-SECRETS-<date>-aarch64.img`. Write it to
+a USB stick or SD card (this erases it). On macOS, find the disk with
+`diskutil list`:
+
+```
+diskutil unmountDisk /dev/diskN
+sudo dd if=secrets/out/arch-rpi5-CONTAINS-SECRETS-<date>-aarch64.img \
+  of=/dev/rdiskN bs=4m
+```
+
+To boot the stick ahead of the NVMe, set the Pi's boot order (SD, then
+USB, then NVMe) once. The live system has the tool for it:
+
+```
+rpi-eeprom-config --edit     # set BOOT_ORDER=0xf641, then reboot
+```
+
+With the stick removed, the Pi boots the NVMe as usual.
+
+What's different from the ISO:
+
+ * The package list is releng's `packages.aarch64` with the changes in
+   [`packages.rpi5`](packages.rpi5): the Raspberry Pi Foundation kernel
+   `linux-rpi-16k` (Pi 5 only), Pi firmware, `rpi5-eeprom` and
+   `raspberrypi-utils` instead of the generic arm64 kernel and UEFI
+   boot loaders. Packages Arch Linux ARM doesn't have are skipped (the
+   build lists them).
+ * There is no boot loader: the Pi firmware loads `kernel8.img`, the
+   initramfs and `cmdline.txt` from the FAT32 partition, and archiso's
+   initramfs finds `arch/aarch64/airootfs.sfs` next to them by the
+   partition's volume ID. With enough RAM (the image size plus 2 GiB)
+   it is copied to RAM, so the stick can be pulled after boot.
+ * When installing, use the Pi kernel, not `linux`:
+   `pacstrap -K /mnt base linux-rpi-16k firmware-raspberrypi ...`, with
+   a FAT32 `/boot` partition and `root=PARTUUID=...` in
+   `/mnt/boot/cmdline.txt`.
+
 ## Commands
 
 | Command | Does |
@@ -247,8 +319,9 @@ From there, install Arch as usual (`archinstall`, or the
 | `just config` | Create missing secret files as commented-out templates |
 | `just keygen` | Generate a WireGuard key pair for the ISO (in a Podman container) |
 | `just build` | Build the ISO into `secrets/out/` (in a Podman container) |
-| `just inspect [ISO]` | Show secrets/overlay files in an ISO and check permissions |
-| `just clean` | Remove the cached pacman packages volume |
+| `just build-rpi5` | Build the Raspberry Pi 5 image into `secrets/out/` (arm64 host) |
+| `just inspect [IMAGE]` | Show secrets/overlay files in an ISO or `.img` and check permissions |
+| `just clean` | Remove the cached pacman packages volumes |
 
 ## If the ISO is lost
 
@@ -270,7 +343,9 @@ Every step, decision and problem along the way is recorded in
 airootfs/        # files added to the live system
 build.sh         # build (host side starts the container)
 config.sh        # creates secret templates
-inspect.sh       # checks a built ISO
+inspect.sh       # checks a built ISO or .img
 packages.extra   # packages added to releng's list
-secrets/         # git-ignored: your secrets and built ISOs
+packages.rpi5    # rpi5 changes to releng's packages.aarch64
+rpi5/airootfs/   # files added to the rpi5 live system only
+secrets/         # git-ignored: your secrets and built images
 ```

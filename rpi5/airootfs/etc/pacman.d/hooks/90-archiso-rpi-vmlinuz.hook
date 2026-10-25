@@ -1,0 +1,16 @@
+# remove from airootfs!
+# mkarchiso copies the kernel as /boot/vmlinuz-*, but linux-rpi-16k installs
+# it as /boot/kernel8.img (the name the Pi firmware loads). Give mkarchiso
+# a copy under the name it expects; build.sh leaves it off the boot
+# partition. Removed after the build by releng's zzzz99 hook.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = boot/kernel8.img
+
+[Action]
+Description = Copying kernel8.img to vmlinuz-linux-rpi-16k for mkarchiso...
+When = PostTransaction
+Exec = /usr/bin/cp /boot/kernel8.img /boot/vmlinuz-linux-rpi-16k

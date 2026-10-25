@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Show what this repo put into a built ISO: image name, hostname, and the
-# owner/mode of every secret and overlay file (never their contents).
-# Fails if any secret is not root-owned or is readable by group/others.
+# Show what this repo put into a built ISO or rpi5 .img: image name,
+# hostname, and the owner/mode of every secret and overlay file (never
+# their contents). Fails if any secret is not root-owned or is readable by
+# group/others.
 #
-# Usage: inspect.sh [ISO]   (default: newest ISO in secrets/out/)
+# Usage: inspect.sh [IMAGE]   (default: newest .iso or .img in secrets/out/)
 #
 # On the host, this re-runs itself inside an Arch Linux container with
-# Podman (squashfs-tools isn't needed on the host), with secrets/out/
-# mounted read-only.
+# Podman (squashfs-tools isn't needed on the host), with the image
+# mounted read-only. An .img is inspected in the Arch Linux ARM container
+# that build.sh rpi5 creates, so it needs an arm64 Podman host.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="${ROOT}/secrets/out"
-IMAGE=${ARCHISO_IMAGE:-docker.io/library/archlinux:latest}
-PACMAN_CACHE_VOLUME=archiso-wireguard-pacman-cache
 
 # Paths whose files must be 0:0 and not readable by group/others.
 SECRET_PATHS=(
@@ -37,20 +37,28 @@ OVERLAY_PATHS=(
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 run_container() {
-    local iso=${1:-}
+    local iso=${1:-} image volume
     command -v podman >/dev/null || die "podman is not installed"
     if [[ -z ${iso} ]]; then
-        iso=$(ls -t "${OUT}"/*.iso 2>/dev/null | head -1) || true
-        [[ -n ${iso} ]] || die "no ISO in secrets/out/ (run: just build)"
+        iso=$(ls -t "${OUT}"/*.iso "${OUT}"/*.img 2>/dev/null | head -1) || true
+        [[ -n ${iso} ]] || die "no ISO or .img in secrets/out/ (run: just build or just build-rpi5)"
     fi
-    [[ -f ${iso} ]] || die "no such ISO: ${iso}"
+    [[ -f ${iso} ]] || die "no such image: ${iso}"
     iso=$(realpath "${iso}")
+    if [[ ${iso} == *.img ]]; then
+        image=${ARCHISO_IMAGE:-localhost/archlinuxarm:latest}
+        volume=archiso-wireguard-pacman-cache-rpi5
+        podman image exists "${image}" || die "no ${image} image (run: just build-rpi5)"
+    else
+        image=${ARCHISO_IMAGE:-docker.io/library/archlinux:latest}
+        volume=archiso-wireguard-pacman-cache
+    fi
     podman run --rm \
         --volume "${ROOT}/inspect.sh:/inspect.sh:ro" \
         --volume "${iso}:/iso/$(basename "${iso}"):ro" \
-        --volume "${PACMAN_CACHE_VOLUME}:/var/cache/pacman/pkg" \
+        --volume "${volume}:/var/cache/pacman/pkg" \
         --env ARCHISO_WIREGUARD_IN_CONTAINER=1 \
-        "${IMAGE}" /inspect.sh "/iso/$(basename "${iso}")"
+        "${image}" /inspect.sh "/iso/$(basename "${iso}")"
 }
 
 # Convert a squashfs-root-relative glob to a regex matching the path
@@ -62,14 +70,27 @@ path_regex() {
 
 inspect_iso() {
     local iso=$1 sfs=/tmp/airootfs.sfs listing p regex bad
-    pacman -Sy --noconfirm --needed squashfs-tools >/dev/null
-    bsdtar -xOf "${iso}" arch/x86_64/airootfs.sfs >"${sfs}"
+    if [[ ${iso} == *.img ]]; then
+        # The Arch Linux ARM image has no pacman keyring yet, and pacman's
+        # download sandbox doesn't work in an unprivileged container.
+        { pacman-key --init && pacman-key --populate archlinuxarm; } >/dev/null 2>&1
+        pacman -Sy --noconfirm --needed --disable-sandbox squashfs-tools mtools >/dev/null
+        # build.sh puts the FAT partition at 1 MiB.
+        MTOOLS_SKIP_CHECK=1 mcopy -n -i "${iso}@@1M" ::arch/aarch64/airootfs.sfs "${sfs}"
+    else
+        pacman -Sy --noconfirm --needed squashfs-tools >/dev/null
+        bsdtar -xOf "${iso}" arch/x86_64/airootfs.sfs >"${sfs}"
+    fi
     # Fields: mode owner size date time path [-> symlink target]
     listing=$(unsquashfs -lln "${sfs}" | awk '$6 ~ /^squashfs-root\// { $3 = $4 = $5 = ""; print }' | tr -s ' ')
 
-    echo "ISO:      $(basename "${iso}") ($(du -h "${iso}" | cut -f1))"
+    echo "Image:    $(basename "${iso}") ($(du -h "${iso}" | cut -f1))"
     unsquashfs -cat "${sfs}" usr/lib/os-release | grep -E '^IMAGE_(ID|VERSION)=' | sed 's/^/          /'
     echo "Hostname: $(unsquashfs -cat "${sfs}" etc/hostname)"
+    if [[ ${iso} == *.img ]]; then
+        echo "Boot:     $(MTOOLS_SKIP_CHECK=1 mtype -i "${iso}@@1M" ::cmdline.txt)"
+        echo "          $(MTOOLS_SKIP_CHECK=1 mdir -b -i "${iso}@@1M" :: | sed 's|^::/||' | grep -vE '\.dtb$' | sort | paste -sd ' ')"
+    fi
 
     echo
     echo "Secrets (mode owner/group path):"
