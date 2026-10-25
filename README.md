@@ -1,7 +1,7 @@
 # BOOMSTICK (for Arch Linux)
 
 <p align="center">
-  <img src="logo.svg" alt="BOOMSTICK logo" width="256">
+  <img src="logo.webp" alt="BOOMSTICK logo" width="256">
 </p>
 
 Build a personal Arch Linux live USB that comes up **online and on your

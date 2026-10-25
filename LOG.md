@@ -1055,3 +1055,7 @@ logo built around the Arch "A" were both combined marks, so:
  * The blog post link keeps its URL
    (`book.rymcg.tech/blog/linux/archlinux-boomstick/`), which is on the
    author's own site.
+ * The drawn `logo.svg` was then replaced by the author's `logo.webp`
+   (512x512): a USB stick with a rocket plume, WiFi, terminal, VPN
+   shield and mini-PC icons, again without the Arch, WireGuard or
+   Raspberry Pi marks.
