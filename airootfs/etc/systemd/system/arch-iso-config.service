@@ -1,6 +1,6 @@
 [Unit]
 Description=Load the live system's configuration from the config partition
-Documentation=https://github.com/EnigmaCurry/archlinux-boomstick
+Documentation=https://github.com/EnigmaCurry/boomstick
 DefaultDependencies=no
 Conflicts=shutdown.target
 After=systemd-udevd.service systemd-tmpfiles-setup.service

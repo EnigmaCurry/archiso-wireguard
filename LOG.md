@@ -1026,3 +1026,32 @@ being renamed from `archiso-wireguard` to `archlinux-boomstick`.
    working.
 
 Earlier entries in this log keep the old names as they were at the time.
+
+## Rename to BOOMSTICK (for Arch Linux) (2026-10-25)
+
+Arch Linux's [trademark policy](https://terms.archlinux.org/docs/trademark-policy/)
+lists combining its marks with other words into a "combined mark"
+("ArchBooks", "ArchMan") and combining its logo with other logos as
+very unlikely to be approved, but allows describing what a project is
+for ("System Management for Arch Linux"). "Arch Linux BOOMSTICK" and a
+logo built around the Arch "A" were both combined marks, so:
+
+ * The project is **BOOMSTICK (for Arch Linux)**, and the GitHub repo is
+   renamed from `archlinux-boomstick` to `boomstick` (GitHub redirects
+   the old URLs).
+ * New logo, `logo.svg`, drawn from scratch: a USB stick with a rocket
+   plume, WiFi, terminal, padlock and single-board-computer icons, and
+   no third-party marks (no Arch "A", no WireGuard dragon, no Raspberry
+   Pi berry, all of which the previous `logo.webp` had).
+ * README: a Trademarks section saying the project isn't affiliated
+   with or endorsed by Arch Linux, Arch Linux ARM, WireGuard or
+   Raspberry Pi Ltd.
+ * Repo links (README clone URL, the config partition's `README.txt`,
+   `arch-iso-config.service`) point at `EnigmaCurry/boomstick`.
+ * Pacman cache volumes are `boomstick-pacman-cache` and
+   `boomstick-pacman-cache-arm64` (another re-download after this).
+   The `BOOMSTICK_*` environment variables, the hostname `arch-iso`,
+   the `ARCH_CONFIG` label and `archiso-config/` are unchanged.
+ * The blog post link keeps its URL
+   (`book.rymcg.tech/blog/linux/archlinux-boomstick/`), which is on the
+   author's own site.

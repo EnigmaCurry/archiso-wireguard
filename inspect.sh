@@ -56,11 +56,11 @@ run_container() {
     case $(podman info --format '{{.Host.Arch}}') in
         amd64)
             image=${ARCHISO_IMAGE:-docker.io/library/archlinux:latest}
-            volume=archlinux-boomstick-pacman-cache
+            volume=boomstick-pacman-cache
             ;;
         arm64)
             image=${ARCHISO_IMAGE:-localhost/archlinuxarm:latest}
-            volume=archlinux-boomstick-pacman-cache-arm64
+            volume=boomstick-pacman-cache-arm64
             podman image exists "${image}" || die "no ${image} image (build.sh creates it)"
             ;;
         *) die "unsupported Podman host architecture" ;;

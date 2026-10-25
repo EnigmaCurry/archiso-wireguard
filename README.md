@@ -1,7 +1,7 @@
-# Arch Linux BOOMSTICK
+# BOOMSTICK (for Arch Linux)
 
 <p align="center">
-  <img src="logo.webp" alt="Arch Linux BOOMSTICK logo" width="256">
+  <img src="logo.svg" alt="BOOMSTICK logo" width="256">
 </p>
 
 Build a personal Arch Linux live USB that comes up **online and on your
@@ -14,7 +14,7 @@ means borrowing a monitor and keyboard, typing a WiFi passphrase into
 (or chaining jump hosts), and cleaning a stale entry out of
 `known_hosts`, every single time. BOOMSTICK does all of that for you:
 plug it in, power on, and `ssh arch-iso`. The blog post
-[Arch Linux BOOMSTICK](https://book.rymcg.tech/blog/linux/archlinux-boomstick/)
+[BOOMSTICK](https://book.rymcg.tech/blog/linux/archlinux-boomstick/)
 walks through it start to finish.
 
 It is the stock Arch Linux installer (archiso's `releng` profile) plus:
@@ -75,8 +75,8 @@ without WireGuard.
 ### 1. Clone the repo
 
 ```
-git clone https://github.com/EnigmaCurry/archlinux-boomstick.git
-cd archlinux-boomstick
+git clone https://github.com/EnigmaCurry/boomstick.git
+cd boomstick
 ```
 
 ### 2. Build the image
@@ -576,3 +576,11 @@ rpi5/airootfs/     # files added to the rpi5 live system only
 secrets/           # git-ignored: your configuration
 out/               # git-ignored: the built images
 ```
+
+## Trademarks
+
+BOOMSTICK is an independent project. It is not affiliated with,
+sponsored by or endorsed by the Arch Linux project, Arch Linux ARM,
+WireGuard or Raspberry Pi Ltd. Arch Linux is a trademark of the Arch
+Linux project, and the other names are trademarks of their respective
+owners, used here only to describe what BOOMSTICK works with.

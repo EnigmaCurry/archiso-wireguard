@@ -81,13 +81,13 @@ host_container() {
     case $(podman info --format '{{.Host.Arch}}') in
         amd64)
             IMAGE=${ARCHISO_IMAGE:-docker.io/library/archlinux:latest}
-            PACMAN_CACHE_VOLUME=archlinux-boomstick-pacman-cache
+            PACMAN_CACHE_VOLUME=boomstick-pacman-cache
             ;;
         arm64)
             # There is no official Arch Linux ARM container image: this
             # one is imported from the ALARM rootfs (see ensure_alarm_image).
             IMAGE=${ARCHISO_IMAGE:-localhost/archlinuxarm:latest}
-            PACMAN_CACHE_VOLUME=archlinux-boomstick-pacman-cache-arm64
+            PACMAN_CACHE_VOLUME=boomstick-pacman-cache-arm64
             ;;
         *) die "unsupported Podman host architecture: $(podman info --format '{{.Host.Arch}}')" ;;
     esac
@@ -123,7 +123,7 @@ stage_profile() {
     fi
     cat >>"${PROFILE}/profiledef.sh" <<'EOF'
 
-# --- archlinux-boomstick ---
+# --- boomstick ---
 iso_name="arch-iso"
 # mkarchiso defaults to the build host's architecture.
 arch="x86_64"
@@ -170,7 +170,7 @@ stage_profile_rpi5() {
     mv "${PROFILE}/packages.aarch64.new" "${PROFILE}/packages.aarch64"
     cat >>"${PROFILE}/profiledef.sh" <<'EOF'
 
-# --- archlinux-boomstick ---
+# --- boomstick ---
 iso_name="arch-rpi5"
 arch="aarch64"
 # The Pi firmware boots the FAT partition directly: no boot loader.

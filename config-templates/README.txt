@@ -29,4 +29,4 @@ plugged into can read it. The stick itself is the secret: whoever holds
 it can join your WiFi and your VPN. Give each stick its own WireGuard
 key, so you can revoke one without touching the others.
 
-https://github.com/EnigmaCurry/archlinux-boomstick
+https://github.com/EnigmaCurry/boomstick
