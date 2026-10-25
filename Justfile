@@ -15,7 +15,7 @@ keygen:
 build:
     ./build.sh x86_64
 
-# Build the Raspberry Pi 5 USB/SD image (with secrets) into secrets/out/ (needs an arm64 Podman host)
+# Build the Raspberry Pi 5 USB/SD image (with secrets) into secrets/out/, inside a Podman container
 build-rpi5:
     ./build.sh rpi5
 
@@ -25,4 +25,4 @@ inspect *image:
 
 # Remove the containers' cached pacman packages (next build re-downloads)
 clean:
-    podman volume rm --force archiso-wireguard-pacman-cache archiso-wireguard-pacman-cache-rpi5
+    podman volume rm --force archiso-wireguard-pacman-cache archiso-wireguard-pacman-cache-arm64

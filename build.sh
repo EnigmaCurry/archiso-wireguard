@@ -12,10 +12,16 @@
 # on top, and runs mkarchiso. The image contains secrets and is written to
 # secrets/out/.
 #
-# rpi5 builds natively on an arm64 host (e.g. Podman on Apple Silicon):
-# the container is Arch Linux ARM, mkarchiso builds in netboot mode (just
-# the kernel, initramfs and airootfs.sfs), and the result is packed into
-# an MBR disk image with one FAT32 partition the Pi firmware boots from.
+# The container always matches the host's architecture: Arch Linux on
+# amd64, Arch Linux ARM (imported from its rootfs tarball) on arm64, e.g.
+# Apple Silicon. When the target is the other architecture, pacman
+# installs the target's packages into the image root (Architecture= in
+# the profile's pacman.conf) and only what runs inside that root, like
+# package scriptlets and mkinitcpio, goes through qemu-user (binfmt_misc).
+#
+# For rpi5, mkarchiso builds in netboot mode (just the kernel, initramfs
+# and airootfs.sfs), and the result is packed into an MBR disk image with
+# one FAT32 partition the Pi firmware boots from.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,20 +34,8 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 TARGET=${1:-x86_64}
 case ${TARGET} in
-    x86_64)
-        IMAGE=${ARCHISO_IMAGE:-docker.io/library/archlinux:latest}
-        PODMAN_ARCH=amd64
-        # Named volume for the container's pacman cache, so rebuilds don't
-        # re-download every package. It holds packages only, no secrets.
-        PACMAN_CACHE_VOLUME=archiso-wireguard-pacman-cache
-        ;;
-    rpi5)
-        # There is no official Arch Linux ARM container image: this one is
-        # imported from the ALARM rootfs tarball (see ensure_alarm_image).
-        IMAGE=${ARCHISO_IMAGE:-localhost/archlinuxarm:latest}
-        PODMAN_ARCH=arm64
-        PACMAN_CACHE_VOLUME=archiso-wireguard-pacman-cache-rpi5
-        ;;
+    x86_64) TARGET_ARCH=x86_64 TARGET_PODMAN_ARCH=amd64 ;;
+    rpi5) TARGET_ARCH=aarch64 TARGET_PODMAN_ARCH=arm64 ;;
     *) die "unknown target '${TARGET}' (x86_64 or rpi5)" ;;
 esac
 # Staging and work dirs live in the container and vanish with it.
@@ -58,6 +52,32 @@ ALARM_SIGNING_KEY=68B3537F39A313B3E574D06777193F152BDBE6A6
 ARCHISO_PKG_URL=https://archlinux.org/packages/extra/any/archiso/download/
 # FAT volume label of the rpi5 boot partition.
 RPI5_LABEL=ARCH_RPI5
+# Arch Linux mirror for x86_64 packages when building on arm64.
+ARCH_MIRROR='https://geo.mirror.pkgbuild.com/$repo/os/$arch'
+
+# The build container for this host's architecture, and a named volume
+# for its pacman cache, so rebuilds don't re-download every package. It
+# holds packages only, no secrets.
+host_container() {
+    case $(podman info --format '{{.Host.Arch}}') in
+        amd64)
+            IMAGE=${ARCHISO_IMAGE:-docker.io/library/archlinux:latest}
+            PACMAN_CACHE_VOLUME=archiso-wireguard-pacman-cache
+            ;;
+        arm64)
+            # There is no official Arch Linux ARM container image: this
+            # one is imported from the ALARM rootfs (see ensure_alarm_image).
+            IMAGE=${ARCHISO_IMAGE:-localhost/archlinuxarm:latest}
+            PACMAN_CACHE_VOLUME=archiso-wireguard-pacman-cache-arm64
+            ;;
+        *) die "unsupported Podman host architecture: $(podman info --format '{{.Host.Arch}}')" ;;
+    esac
+}
+
+# Container side: true when the target isn't this container's architecture.
+cross_build() {
+    [[ $(uname -m) != "${TARGET_ARCH}" ]]
+}
 
 # iwd network files in secrets/wifi/ (other files, like templates, are ignored)
 wifi_networks() {
@@ -118,11 +138,21 @@ stage_profile() {
         return
     fi
     grep -v '^#' "${ROOT}/packages.extra" >>"${PROFILE}/packages.x86_64"
+    if cross_build; then
+        # releng's pacman.conf uses the container's mirrorlist, which on
+        # Arch Linux ARM points to ALARM.
+        sed -i -e 's/^Architecture.*/Architecture = x86_64/' \
+            -e "s|^Include = /etc/pacman.d/mirrorlist|Server = ${ARCH_MIRROR}|" \
+            "${PROFILE}/pacman.conf"
+        cross_cache_dir
+    fi
     cat >>"${PROFILE}/profiledef.sh" <<'EOF'
 
 # --- archiso-wireguard ---
 # The ISO contains secrets: make that obvious in its filename.
 iso_name="arch-iso-CONTAINS-SECRETS"
+# mkarchiso defaults to the build host's architecture.
+arch="x86_64"
 file_permissions["/usr/local/bin/arch-iso-webhook"]="0:0:755"
 EOF
 }
@@ -134,7 +164,13 @@ rpi5_packages() {
     local available line pkg
     local -A removed=()
     local -a pkgs=()
-    available=$( { pacman -Slq; pacman -Sgq; } | sort -u)
+    # The target's repos, synced into a throwaway database.
+    mkdir -p "${BUILD}/syncdb"
+    pacman --config "${PROFILE}/pacman.conf" --dbpath "${BUILD}/syncdb" -Sy >/dev/null
+    available=$( {
+        pacman --config "${PROFILE}/pacman.conf" --dbpath "${BUILD}/syncdb" -Slq
+        pacman --config "${PROFILE}/pacman.conf" --dbpath "${BUILD}/syncdb" -Sgq
+    } | sort -u)
     while IFS= read -r line; do
         [[ ${line} == -* ]] && removed[${line#-}]=1
     done < <(grep -vE '^\s*(#|$)' "${ROOT}/packages.rpi5")
@@ -152,13 +188,11 @@ rpi5_packages() {
 
 stage_profile_rpi5() {
     cp -a "${ROOT}/rpi5/airootfs/." "${PROFILE}/airootfs/"
+    # Arch Linux ARM's repos instead of releng's Arch ones.
+    cp "${ROOT}/rpi5/pacman.conf" "${PROFILE}/pacman.conf"
+    cross_build && cross_cache_dir
     rpi5_packages >"${PROFILE}/packages.aarch64.new"
     mv "${PROFILE}/packages.aarch64.new" "${PROFILE}/packages.aarch64"
-    # Build with Arch Linux ARM's repos (the container's pacman.conf)
-    # instead of releng's Arch ones. pacstrap runs pacman in a nested user
-    # namespace, where its download sandbox can't switch users.
-    sed -e 's/^DownloadUser/#DownloadUser/' /etc/pacman.conf >"${PROFILE}/pacman.conf"
-    sed -i '/^\[options\]/a DisableSandbox' "${PROFILE}/pacman.conf"
     cat >>"${PROFILE}/profiledef.sh" <<'EOF'
 
 # --- archiso-wireguard ---
@@ -169,6 +203,14 @@ arch="aarch64"
 bootmodes=()
 file_permissions["/usr/local/bin/arch-iso-webhook"]="0:0:755"
 EOF
+}
+
+# Cross builds keep the target's packages apart from the container's:
+# both distros have "any" packages with the same file names but different
+# signatures. mkarchiso uses a profile CacheDir that isn't the default.
+cross_cache_dir() {
+    mkdir -p "/var/cache/pacman/pkg/${TARGET_ARCH}"
+    sed -i "/^\[options\]/a CacheDir = /var/cache/pacman/pkg/${TARGET_ARCH}" "${PROFILE}/pacman.conf"
 }
 
 # True if secrets/webhook.env sets WEBHOOK_URL (not just the template).
@@ -233,11 +275,16 @@ stage_secrets() {
 run_container() {
     local arch
     command -v podman >/dev/null || die "podman is not installed"
-    # Emulating the other architecture would work but take hours.
+    host_container
+    [[ ${IMAGE} == localhost/archlinuxarm:latest ]] && ensure_alarm_image
+    # Building for the other architecture runs the target's binaries
+    # (scriptlets, mkinitcpio) through qemu-user: check that works.
     arch=$(podman info --format '{{.Host.Arch}}')
-    [[ ${arch} == "${PODMAN_ARCH}" ]] \
-        || die "target ${TARGET} needs a native ${PODMAN_ARCH} Podman host (this one is ${arch})"
-    [[ ${TARGET} == rpi5 ]] && ensure_alarm_image
+    if [[ ${arch} != "${TARGET_PODMAN_ARCH}" ]]; then
+        podman run --rm --arch "${TARGET_PODMAN_ARCH}" docker.io/library/busybox:latest true >/dev/null 2>&1 \
+            || die "can't run ${TARGET_PODMAN_ARCH} binaries on this ${arch} host: install qemu-user-static with binfmt_misc support (see README)"
+        echo "NOTE: building ${TARGET} (${TARGET_PODMAN_ARCH}) on a ${arch} host: the target's scriptlets and mkinitcpio run under qemu-user, so it is slower" >&2
+    fi
     podman run --rm --privileged \
         --volume "${ROOT}:/build" \
         --volume "${PACMAN_CACHE_VOLUME}:/var/cache/pacman/pkg" \
@@ -245,7 +292,7 @@ run_container() {
         "${IMAGE}" /build/build.sh "${TARGET}"
 }
 
-# Host side, rpi5: create the Arch Linux ARM container image from the
+# Host side, arm64: create the Arch Linux ARM container image from the
 # official rootfs tarball, once. The tarball's signature is checked in a
 # throwaway Debian container against the pinned ALARM signing key.
 ensure_alarm_image() {
@@ -263,7 +310,7 @@ ensure_alarm_image() {
         gpg --status-fd 1 --verify /d/rootfs.tar.gz.sig /d/rootfs.tar.gz 2>/dev/null |
             grep -q '^\[GNUPG:\] VALIDSIG ${ALARM_SIGNING_KEY} '" \
         || { rm -rf "${tmp}"; die "bad signature on ${ALARM_ROOTFS_URL}"; }
-    podman import --change 'CMD ["/bin/bash"]' "${tmp}/rootfs.tar.gz" "${IMAGE}"
+    podman import --arch arm64 --change 'CMD ["/bin/bash"]' "${tmp}/rootfs.tar.gz" "${IMAGE}"
     rm -rf "${tmp}"
 }
 
@@ -288,10 +335,16 @@ setup_builder() {
 # show up on the host with a subordinate uid, so builder only writes inside
 # the container and root copies the ISO out (owned by the host user).
 build_iso() {
-    if [[ ${TARGET} == rpi5 ]]; then
+    if [[ $(uname -m) == aarch64 ]]; then
         install_archiso_alarm
     else
         pacman -Syu --noconfirm --needed archiso openssh
+    fi
+    if cross_build && [[ ${TARGET} == rpi5 ]]; then
+        # Trust Arch Linux ARM's package signing key (Arch Linux ARM's
+        # container already has Arch's keyring for the other direction).
+        pacman-key --keyserver hkps://keyserver.ubuntu.com --recv-keys "${ALARM_SIGNING_KEY}"
+        pacman-key --lsign-key "${ALARM_SIGNING_KEY}"
     fi
     [[ -d ${RELENG} ]] || die "archiso is not installed (missing ${RELENG})"
     ensure_host_keys
@@ -310,7 +363,7 @@ build_iso() {
     ls -lh "${OUT}"/*.iso
 }
 
-# Container side, rpi5: the imported rootfs has no pacman keyring yet.
+# Container side, arm64: the imported rootfs has no pacman keyring yet.
 install_archiso_alarm() {
     local url
     pacman-key --init

@@ -28,7 +28,9 @@ The ISO boots without any prompts.
 
 ## Requirements
 
- * Linux (any distro) on x86_64.
+ * Linux (any distro) on x86_64. Other hosts (arm64 Linux, macOS with
+   `podman machine`) also work: see
+   [Building for the other architecture](#building-for-the-other-architecture).
  * [Podman](https://podman.io/), working rootless. Your user needs
    subordinate uid/gid ranges (`grep $USER /etc/subuid /etc/subgid`),
    which most distros set up when the user is created.
@@ -253,9 +255,10 @@ the x86_64 ISO, so both images are "the arch-iso installer" on your VPN
 and present the same host key. Don't boot both at once: they would fight
 over the WireGuard peer address.
 
-Requirements: a **native arm64** Podman host, such as a Mac with Apple
-Silicon or an arm64 Linux machine. Building the Pi image on x86_64 (or
-the ISO on arm64) would need CPU emulation and is refused.
+Requirements: Podman and just, as above. It builds natively on an
+**arm64** host, such as a Mac with Apple Silicon or an arm64 Linux
+machine, and also on x86_64 with qemu-user (see
+[Building for the other architecture](#building-for-the-other-architecture)).
 
 On macOS:
 
@@ -272,11 +275,12 @@ just build-rpi5
 just inspect
 ```
 
-The first build downloads the Arch Linux ARM rootfs (about 830 MB),
-checks its signature, and imports it as the `localhost/archlinuxarm`
-Podman image. The image is written to
-`secrets/out/arch-rpi5-CONTAINS-SECRETS-<date>-aarch64.img`. Write it to
-a USB stick or SD card (this erases it). On macOS, find the disk with
+On an arm64 host, the first build downloads the Arch Linux ARM rootfs
+(about 830 MB), checks its signature, and imports it as the
+`localhost/archlinuxarm` Podman image for the build container. The
+image is written to
+`secrets/out/arch-rpi5-CONTAINS-SECRETS-<date>-aarch64.img` (the date is
+UTC). Write it to a USB stick or SD card (this erases it). On macOS, find the disk with
 `diskutil list`:
 
 ```
@@ -312,6 +316,31 @@ What's different from the ISO:
    a FAT32 `/boot` partition and `root=PARTUUID=...` in
    `/mnt/boot/cmdline.txt`.
 
+## Building for the other architecture
+
+The build container always matches the host: Arch Linux on x86_64, and
+Arch Linux ARM (imported from its official rootfs, signature checked)
+on arm64. When the target is the other architecture, pacman installs
+the target's packages into the image, and only the programs that run
+inside it (package install scripts, mkinitcpio) go through qemu-user
+emulation via binfmt_misc. Downloads, squashfs compression and
+everything else run natively, so a cross build is slower, but not by a
+lot. `build.sh` says when it is doing one.
+
+Podman on macOS (`podman machine`) already has qemu-user set up. On a
+Linux host, install the static qemu-user emulators with binfmt_misc
+rules, e.g. on Arch Linux:
+
+```
+sudo pacman -S --needed qemu-user-static qemu-user-static-binfmt
+```
+
+(Debian/Ubuntu and Fedora: `qemu-user-static`.) The build checks that
+it can run a target-architecture binary before it starts. The binfmt
+entry (`/proc/sys/fs/binfmt_misc/qemu-aarch64` for rpi5,
+`qemu-x86_64` for the ISO) needs the **F** flag, so it works inside
+containers; the packages above set it.
+
 ## Commands
 
 | Command | Does |
@@ -319,7 +348,7 @@ What's different from the ISO:
 | `just config` | Create missing secret files as commented-out templates |
 | `just keygen` | Generate a WireGuard key pair for the ISO (in a Podman container) |
 | `just build` | Build the ISO into `secrets/out/` (in a Podman container) |
-| `just build-rpi5` | Build the Raspberry Pi 5 image into `secrets/out/` (arm64 host) |
+| `just build-rpi5` | Build the Raspberry Pi 5 image into `secrets/out/` (in a Podman container) |
 | `just inspect [IMAGE]` | Show secrets/overlay files in an ISO or `.img` and check permissions |
 | `just clean` | Remove the cached pacman packages volumes |
 

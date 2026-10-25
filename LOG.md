@@ -477,7 +477,8 @@ Decisions:
    Anything ALARM doesn't have is skipped with a message (currently
    only `ghostty-terminfo`).
  * Each target refuses to build on a Podman host of the other
-   architecture (emulation would take hours).
+   architecture (emulation would take hours). (Superseded: see "Cross
+   builds" below.)
 
 Setup on the Mac (2026-10-24):
 
@@ -538,3 +539,78 @@ The VM maps container uids 0-1000000, so `setup_builder`'s
    `raspberrypi-utils`; `/etc/pacman.d/hooks/` is empty after build.
  * **Not yet tested:** booting it on a Pi 5, and the x86_64 target after
    the `build.sh` changes (no x86_64 Podman host here).
+
+## Cross builds: either target on either host
+
+Goal: `just build-rpi5` on an x86_64 machine too (and, symmetrically,
+`just build` on arm64).
+
+### First attempt: run the whole build container under emulation
+
+`podman run --arch <target>` with qemu-user via binfmt_misc. Tested on
+the Mac (x86_64 ISO in an emulated `archlinux` container). Two failures:
+
+ * pacman: `error restricting syscalls via seccomp: 22` and `switching
+   to sandbox user 'alpm' failed`: qemu-user can't apply pacman's
+   download sandbox (worked around with `--disable-sandbox`).
+ * Then `unshare failed: Invalid argument` when builder creates its user
+   namespace. qemu-user is multithreaded, and the kernel refuses
+   `unshare(CLONE_NEWUSER)` from a multithreaded process. This is not
+   fixable with binfmt flags, so rootless mkarchiso can't run in an
+   emulated container at all. (I had guessed it was the missing C
+   flag on Arch's binfmt entries; that was wrong.)
+
+### Design: native container, foreign-arch pacstrap
+
+The build container now always matches the **host**: `archlinux` on
+amd64, the imported `localhost/archlinuxarm` on arm64. The target
+architecture only appears in the profile's `pacman.conf`
+(`Architecture = x86_64|aarch64`), so pacman, the nested user
+namespace, mksquashfs, xorriso, mkfs.vfat etc. all run natively. Only
+the target's binaries run in the image root (scriptlets, pacman hooks,
+mkinitcpio, the vmlinuz hook) go through qemu-user, which needs just
+the binfmt **F** flag (standard in the qemu-user-static packages).
+
+ * `rpi5/pacman.conf`: ALARM's repos for aarch64, used by both kinds of
+   container (previously a copy of the ALARM container's own).
+ * x86_64 on arm64: releng's `pacman.conf` gets `Architecture = x86_64`
+   and an Arch mirror instead of the container's (ALARM) mirrorlist.
+   ALARM's container already has `archlinux-keyring`.
+ * rpi5 on amd64: the container trusts the pinned ALARM build key
+   (`pacman-key --recv-keys` + `--lsign-key`).
+ * Cross builds put the target's packages in
+   `/var/cache/pacman/pkg/<arch>/` (profile `CacheDir`), apart from the
+   container's: both distros have `any` packages with the same file
+   names and different signatures.
+ * `rpi5_packages` checks availability against the target repos, synced
+   with the profile's `pacman.conf` into a throwaway database.
+ * Cache volumes are per host: `archiso-wireguard-pacman-cache` (amd64,
+   unchanged) and `archiso-wireguard-pacman-cache-arm64`.
+ * `inspect.sh` also uses the host's container (both inspect both image
+   types).
+ * The host checks that a target-arch binary runs (`busybox` image with
+   `--arch`) before starting, and says it is a cross build.
+
+Problem hit: mkarchiso takes `arch` from `uname -m` when the profile
+doesn't set it, so the cross ISO build tried to install the aarch64
+list. `build.sh` now sets `arch="x86_64"` for the ISO too.
+
+### Verification (Mac, test secrets)
+
+ * **x86_64 ISO on arm64** (cross): succeeded in ~17.5 minutes with an
+   empty x86_64 package cache. `inspect.sh`: PASS. The ISO has
+   `vmlinuz-linux` (x86 bzImage 7.2.11-arch1-1), syslinux and
+   systemd-boot (`BOOTx64.EFI`), an initramfs with the archiso hook and
+   x86-64 binaries, x86-64 `bash` in the airootfs, and
+   `/etc/ssl/certs` populated (scriptlets ran under emulation). Not
+   boot-tested.
+ * Also checked: the user's own `just build-rpi5` with real secrets
+   (run with the previous commit) passes `just inspect` with WireGuard,
+   WiFi and the webhook baked in.
+ * **rpi5 on arm64** (native) after the rework: succeeded in ~10
+   minutes, `inspect.sh` PASS. mkinitcpio prints `module not found:
+   'phram'` / `binary not found: 'memdiskfind'` from releng's memdisk
+   hook (for BIOS memdisk boots; no syslinux on aarch64). Same in the
+   first rpi5 build; harmless, the initramfs is still generated.
+ * **Not tested:** rpi5 on an amd64 host (no x86_64 machine here), and
+   the native x86_64 ISO on amd64 after these changes.

@@ -6,10 +6,10 @@
 #
 # Usage: inspect.sh [IMAGE]   (default: newest .iso or .img in secrets/out/)
 #
-# On the host, this re-runs itself inside an Arch Linux container with
-# Podman (squashfs-tools isn't needed on the host), with the image
-# mounted read-only. An .img is inspected in the Arch Linux ARM container
-# that build.sh rpi5 creates, so it needs an arm64 Podman host.
+# On the host, this re-runs itself inside the same container build.sh
+# uses for this host's architecture (Arch Linux on amd64, Arch Linux ARM
+# on arm64; squashfs-tools isn't needed on the host), with the image
+# mounted read-only. Either container inspects either kind of image.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,14 +45,19 @@ run_container() {
     fi
     [[ -f ${iso} ]] || die "no such image: ${iso}"
     iso=$(realpath "${iso}")
-    if [[ ${iso} == *.img ]]; then
-        image=${ARCHISO_IMAGE:-localhost/archlinuxarm:latest}
-        volume=archiso-wireguard-pacman-cache-rpi5
-        podman image exists "${image}" || die "no ${image} image (run: just build-rpi5)"
-    else
-        image=${ARCHISO_IMAGE:-docker.io/library/archlinux:latest}
-        volume=archiso-wireguard-pacman-cache
-    fi
+    # Same images and cache volumes as build.sh.
+    case $(podman info --format '{{.Host.Arch}}') in
+        amd64)
+            image=${ARCHISO_IMAGE:-docker.io/library/archlinux:latest}
+            volume=archiso-wireguard-pacman-cache
+            ;;
+        arm64)
+            image=${ARCHISO_IMAGE:-localhost/archlinuxarm:latest}
+            volume=archiso-wireguard-pacman-cache-arm64
+            podman image exists "${image}" || die "no ${image} image (build.sh creates it)"
+            ;;
+        *) die "unsupported Podman host architecture" ;;
+    esac
     podman run --rm \
         --volume "${ROOT}/inspect.sh:/inspect.sh:ro" \
         --volume "${iso}:/iso/$(basename "${iso}"):ro" \
@@ -70,15 +75,17 @@ path_regex() {
 
 inspect_iso() {
     local iso=$1 sfs=/tmp/airootfs.sfs listing p regex bad
-    if [[ ${iso} == *.img ]]; then
-        # The Arch Linux ARM image has no pacman keyring yet, and pacman's
-        # download sandbox doesn't work in an unprivileged container.
+    # The imported Arch Linux ARM image has no pacman keyring yet.
+    if [[ $(uname -m) == aarch64 ]]; then
         { pacman-key --init && pacman-key --populate archlinuxarm; } >/dev/null 2>&1
-        pacman -Sy --noconfirm --needed --disable-sandbox squashfs-tools mtools >/dev/null
+    fi
+    # pacman's download sandbox doesn't work in an unprivileged
+    # Arch Linux ARM container; this one is thrown away anyway.
+    pacman -Sy --noconfirm --needed --disable-sandbox squashfs-tools mtools >/dev/null
+    if [[ ${iso} == *.img ]]; then
         # build.sh puts the FAT partition at 1 MiB.
         MTOOLS_SKIP_CHECK=1 mcopy -n -i "${iso}@@1M" ::arch/aarch64/airootfs.sfs "${sfs}"
     else
-        pacman -Sy --noconfirm --needed squashfs-tools >/dev/null
         bsdtar -xOf "${iso}" arch/x86_64/airootfs.sfs >"${sfs}"
     fi
     # Fields: mode owner size date time path [-> symlink target]
