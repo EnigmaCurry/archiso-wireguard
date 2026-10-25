@@ -81,13 +81,13 @@ host_container() {
     case $(podman info --format '{{.Host.Arch}}') in
         amd64)
             IMAGE=${ARCHISO_IMAGE:-docker.io/library/archlinux:latest}
-            PACMAN_CACHE_VOLUME=archiso-wireguard-pacman-cache
+            PACMAN_CACHE_VOLUME=archlinux-boomstick-pacman-cache
             ;;
         arm64)
             # There is no official Arch Linux ARM container image: this
             # one is imported from the ALARM rootfs (see ensure_alarm_image).
             IMAGE=${ARCHISO_IMAGE:-localhost/archlinuxarm:latest}
-            PACMAN_CACHE_VOLUME=archiso-wireguard-pacman-cache-arm64
+            PACMAN_CACHE_VOLUME=archlinux-boomstick-pacman-cache-arm64
             ;;
         *) die "unsupported Podman host architecture: $(podman info --format '{{.Host.Arch}}')" ;;
     esac
@@ -123,7 +123,7 @@ stage_profile() {
     fi
     cat >>"${PROFILE}/profiledef.sh" <<'EOF'
 
-# --- archiso-wireguard ---
+# --- archlinux-boomstick ---
 iso_name="arch-iso"
 # mkarchiso defaults to the build host's architecture.
 arch="x86_64"
@@ -170,7 +170,7 @@ stage_profile_rpi5() {
     mv "${PROFILE}/packages.aarch64.new" "${PROFILE}/packages.aarch64"
     cat >>"${PROFILE}/profiledef.sh" <<'EOF'
 
-# --- archiso-wireguard ---
+# --- archlinux-boomstick ---
 iso_name="arch-rpi5"
 arch="aarch64"
 # The Pi firmware boots the FAT partition directly: no boot loader.
@@ -208,8 +208,8 @@ run_container() {
     podman run --rm --privileged \
         --volume "${ROOT}:/build" \
         --volume "${PACMAN_CACHE_VOLUME}:/var/cache/pacman/pkg" \
-        --env ARCHISO_WIREGUARD_IN_CONTAINER=1 \
-        --env ARCHISO_WIREGUARD_USB_ISO="${usb_iso}" \
+        --env BOOMSTICK_IN_CONTAINER=1 \
+        --env BOOMSTICK_USB_ISO="${usb_iso}" \
         "${IMAGE}" /build/build.sh "${TARGET}"
 }
 
@@ -368,7 +368,7 @@ make_disk_image() {
         # x86_64 built its ISO in this container; usb got one from the
         # host, built in a container of its own.
         if [[ ${TARGET} == usb ]]; then
-            iso="/build/${ARCHISO_WIREGUARD_USB_ISO}"
+            iso="/build/${BOOMSTICK_USB_ISO}"
         else
             iso=$(ls -t "${BUILD}"/out/*.iso | head -1)
         fi
@@ -417,7 +417,7 @@ make_disk_image() {
 }
 
 main() {
-    if [[ -n ${ARCHISO_WIREGUARD_IN_CONTAINER:-} ]]; then
+    if [[ -n ${BOOMSTICK_IN_CONTAINER:-} ]]; then
         build_iso
     elif [[ ${TARGET} == usb ]]; then
         run_usb

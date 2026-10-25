@@ -1004,3 +1004,25 @@ Tested with `udisksctl loop-setup` on a FAT image labelled `TESTCFG`
 (not `ARCH_CONFIG`, to keep the real stick out of it): unmounted label
 -> mounted, written, unmounted; already-mounted label -> used and left
 mounted; missing label -> clean error.
+
+## Rename to archlinux-boomstick (2026-10-25)
+
+The project is now called Arch Linux BOOMSTICK, and the GitHub repo is
+being renamed from `archiso-wireguard` to `archlinux-boomstick`.
+
+ * README title and clone URL, the `README.txt` on the config
+   partition, and the `Documentation=` link in
+   `arch-iso-config.service` point at the new repo.
+ * The in-container environment variables are renamed from
+   `ARCHISO_WIREGUARD_*` to `BOOMSTICK_*`.
+ * The pacman cache volumes are renamed to
+   `archlinux-boomstick-pacman-cache` and
+   `archlinux-boomstick-pacman-cache-arm64`. The first build after the
+   rename downloads the packages again; the old volumes can be removed
+   with `podman volume rm archiso-wireguard-pacman-cache
+   archiso-wireguard-pacman-cache-arm64`.
+ * The hostname (`arch-iso`), the `ARCH_CONFIG` label and the
+   `archiso-config/` directory are unchanged, so existing sticks keep
+   working.
+
+Earlier entries in this log keep the old names as they were at the time.

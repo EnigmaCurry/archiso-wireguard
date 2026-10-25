@@ -1,4 +1,8 @@
-# archiso-wireguard
+# Arch Linux BOOMSTICK
+
+<p align="center">
+  <img src="logo.webp" alt="Arch Linux BOOMSTICK logo" width="256">
+</p>
 
 Build a personal Arch Linux live USB that comes up **online and on your
 WireGuard VPN by itself**, so you can SSH in from anywhere and drive the
@@ -62,8 +66,8 @@ without WireGuard.
 ### 1. Clone the repo
 
 ```
-git clone https://github.com/EnigmaCurry/archiso-wireguard.git
-cd archiso-wireguard
+git clone https://github.com/EnigmaCurry/archlinux-boomstick.git
+cd archlinux-boomstick
 ```
 
 ### 2. Build the image

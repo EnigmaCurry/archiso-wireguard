@@ -56,11 +56,11 @@ run_container() {
     case $(podman info --format '{{.Host.Arch}}') in
         amd64)
             image=${ARCHISO_IMAGE:-docker.io/library/archlinux:latest}
-            volume=archiso-wireguard-pacman-cache
+            volume=archlinux-boomstick-pacman-cache
             ;;
         arm64)
             image=${ARCHISO_IMAGE:-localhost/archlinuxarm:latest}
-            volume=archiso-wireguard-pacman-cache-arm64
+            volume=archlinux-boomstick-pacman-cache-arm64
             podman image exists "${image}" || die "no ${image} image (build.sh creates it)"
             ;;
         *) die "unsupported Podman host architecture" ;;
@@ -69,7 +69,7 @@ run_container() {
         --volume "${ROOT}/inspect.sh:/inspect.sh:ro" \
         --volume "${iso}:/iso/$(basename "${iso}"):ro" \
         --volume "${volume}:/var/cache/pacman/pkg" \
-        --env ARCHISO_WIREGUARD_IN_CONTAINER=1 \
+        --env BOOMSTICK_IN_CONTAINER=1 \
         "${image}" /inspect.sh "/iso/$(basename "${iso}")"
 }
 
@@ -185,7 +185,7 @@ inspect_iso() {
     exit "${failed}"
 }
 
-if [[ -n ${ARCHISO_WIREGUARD_IN_CONTAINER:-} ]]; then
+if [[ -n ${BOOMSTICK_IN_CONTAINER:-} ]]; then
     inspect_iso "$@"
 else
     run_container "$@"

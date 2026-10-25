@@ -33,4 +33,4 @@ inspect *image:
 
 # Remove the containers' cached pacman packages (next build re-downloads)
 clean:
-    podman volume rm --force archiso-wireguard-pacman-cache archiso-wireguard-pacman-cache-arm64
+    podman volume rm --force archlinux-boomstick-pacman-cache archlinux-boomstick-pacman-cache-arm64

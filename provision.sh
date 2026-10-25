@@ -175,7 +175,7 @@ provision_mtools() {
         --volume "${ROOT}/provision.sh:/provision.sh:ro" \
         --volume "${SECRETS}:/secrets:ro" \
         --volume "${TEMPLATES}:/templates:ro" \
-        --env ARCHISO_WIREGUARD_IN_CONTAINER=1 \
+        --env BOOMSTICK_IN_CONTAINER=1 \
         "$(host_image)" /provision.sh /target
 }
 
@@ -224,7 +224,7 @@ provision_in_container() {
 
 main() {
     local target=${1:-}
-    if [[ -n ${ARCHISO_WIREGUARD_IN_CONTAINER:-} ]]; then
+    if [[ -n ${BOOMSTICK_IN_CONTAINER:-} ]]; then
         provision_in_container
         return
     fi
