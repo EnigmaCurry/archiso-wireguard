@@ -614,3 +614,67 @@ list. `build.sh` now sets `arch="x86_64"` for the ISO too.
    first rpi5 build; harmless, the initramfs is still generated.
  * **Not tested:** rpi5 on an amd64 host (no x86_64 machine here), and
    the native x86_64 ISO on amd64 after these changes.
+
+## One stick for both: `just build-usb`
+
+Goal: a single USB stick that boots x86_64 PCs and the Raspberry Pi 5.
+
+Why it fits on one FAT32 partition: the Pi 5 firmware reads only the
+top-level files (`config.txt`, `kernel8.img`, initramfs, DTBs,
+`overlays/`, `cmdline.txt`); x86_64 UEFI firmware runs
+`EFI/BOOT/BOOTx64.EFI` (systemd-boot), which reads `loader/entries/`
+and loads `arch/boot/x86_64/`; and archiso's initramfs mounts
+`arch/$(uname -m)/airootfs.sfs`, so `arch/x86_64/` and `arch/aarch64/`
+coexist. The ISO's initramfs looks for its ISO volume UUID first, then
+for the file `/boot/<uuid>.uuid` on every partition, which is how
+archiso supports copying an ISO onto a FAT32 stick.
+
+Implementation (`build.sh usb`):
+
+ * Host side: run `build.sh x86_64` (its own container), then the rpi5
+   build with the new ISO's path in `ARCHISO_WIREGUARD_USB_ISO`.
+ * `usb` builds exactly like `rpi5` (`pi_target`); in
+   `make_rpi5_image` it also extracts the ISO into the FAT staging with
+   `bsdtar`, except the ISO 9660-only `boot/syslinux`, `boot/grub` and
+   `arch/grubenv`, and checks `EFI/BOOT/BOOTx64.EFI` and
+   `arch/x86_64/` are there.
+ * Output: `arch-usb-CONTAINS-SECRETS-<date>-x86_64+rpi5.img`; the ISO
+   is kept.
+ * `inspect.sh` now inspects every `arch/*/airootfs.sfs` in an image
+   (an ISO or rpi5 image has one, a usb image two).
+
+Decisions: UEFI only on x86_64 (legacy BIOS would need syslinux in the
+FAT partition and MBR boot code; possible, not done). Partition type
+stays `0x0c`, which the Pi needs; most UEFI firmware boots FAT32 USB
+sticks of that type, a strict one may want `0xef`.
+
+### Verification (Mac, test secrets)
+
+ * `./build.sh usb` succeeded in ~25 minutes (cross x86_64 ISO, warm
+   cache, then native rpi5). Image 2.5 GB, one bootable FAT32 (LBA)
+   partition.
+ * `inspect.sh`: `arch/x86_64` (`IMAGE_ID=arch-iso-CONTAINS-SECRETS`)
+   and `arch/aarch64` (`arch-rpi5-CONTAINS-SECRETS`) both PASS.
+ * FAT contents: `EFI/BOOT/BOOTx64.EFI` + `BOOTIA32.EFI`,
+   `loader/loader.conf` + entries, `arch/boot/x86_64/` kernel and
+   initramfs, both airootfs, `boot/<iso uuid>.uuid` matching the loader
+   entry's `archisosearchuuid`, `boot/<fat volid>.uuid` matching
+   `cmdline.txt`; no syslinux or grub.
+ * Both builds write `arch/version`; the ISO's wins. Informational only.
+
+### Tested on hardware (2026-10-24)
+
+The user built `just build-usb` with the real secrets, wrote it to a USB
+stick, and **booted it on an x86_64 PC (UEFI) and on the Raspberry Pi
+5**.
+
+ * First Pi attempt booted the NVMe instead: its `BOOT_ORDER=0xf461`
+   tries SD, NVMe, then USB, so a bootable NVMe always wins. With
+   `BOOT_ORDER=0xf641` (SD, USB, NVMe) the stick boots, and without it
+   the Pi falls through to the NVMe.
+ * While debugging, found that the FAT boot sector's "hidden sectors"
+   field was 0 (`mkfs.vfat -C` formats a plain file, but the partition
+   starts at sector 2048). The Pi booted anyway, so its bootloader
+   doesn't rely on it; `build.sh` now passes `-h 2048` so the field is
+   correct for any firmware that does. Built images with this change
+   are not yet boot-tested.

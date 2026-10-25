@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Show what this repo put into a built ISO or rpi5 .img: image name,
+# Show what this repo put into a built ISO or .img (rpi5 or usb): image name,
 # hostname, and the owner/mode of every secret and overlay file (never
 # their contents). Fails if any secret is not root-owned or is readable by
 # group/others.
 #
 # Usage: inspect.sh [IMAGE]   (default: newest .iso or .img in secrets/out/)
+# A usb .img has two live systems (x86_64 and aarch64); both are checked.
 #
 # On the host, this re-runs itself inside the same container build.sh
 # uses for this host's architecture (Arch Linux on amd64, Arch Linux ARM
@@ -73,31 +74,14 @@ path_regex() {
     echo " squashfs-root/${p//\*/[^/ ]*}( |/|$)"
 }
 
-inspect_iso() {
-    local iso=$1 sfs=/tmp/airootfs.sfs listing p regex bad
-    # The imported Arch Linux ARM image has no pacman keyring yet.
-    if [[ $(uname -m) == aarch64 ]]; then
-        { pacman-key --init && pacman-key --populate archlinuxarm; } >/dev/null 2>&1
-    fi
-    # pacman's download sandbox doesn't work in an unprivileged
-    # Arch Linux ARM container; this one is thrown away anyway.
-    pacman -Sy --noconfirm --needed --disable-sandbox squashfs-tools mtools >/dev/null
-    if [[ ${iso} == *.img ]]; then
-        # build.sh puts the FAT partition at 1 MiB.
-        MTOOLS_SKIP_CHECK=1 mcopy -n -i "${iso}@@1M" ::arch/aarch64/airootfs.sfs "${sfs}"
-    else
-        bsdtar -xOf "${iso}" arch/x86_64/airootfs.sfs >"${sfs}"
-    fi
+# Print what's in one airootfs.sfs; fail if a secret isn't root-only.
+inspect_sfs() {
+    local sfs=$1 listing p regex bad
     # Fields: mode owner size date time path [-> symlink target]
     listing=$(unsquashfs -lln "${sfs}" | awk '$6 ~ /^squashfs-root\// { $3 = $4 = $5 = ""; print }' | tr -s ' ')
 
-    echo "Image:    $(basename "${iso}") ($(du -h "${iso}" | cut -f1))"
     unsquashfs -cat "${sfs}" usr/lib/os-release | grep -E '^IMAGE_(ID|VERSION)=' | sed 's/^/          /'
     echo "Hostname: $(unsquashfs -cat "${sfs}" etc/hostname)"
-    if [[ ${iso} == *.img ]]; then
-        echo "Boot:     $(MTOOLS_SKIP_CHECK=1 mtype -i "${iso}@@1M" ::cmdline.txt)"
-        echo "          $(MTOOLS_SKIP_CHECK=1 mdir -b -i "${iso}@@1M" :: | sed 's|^::/||' | grep -vE '\.dtb$' | sort | paste -sd ' ')"
-    fi
 
     echo
     echo "Secrets (mode owner/group path):"
@@ -123,9 +107,46 @@ inspect_iso() {
     if [[ -n ${bad} ]]; then
         echo "FAIL: secrets not root-only:"
         sed 's/squashfs-root//; s/^/  /' <<<"${bad}"
-        exit 1
+        return 1
     fi
     echo "PASS: all secret files are root-owned and root-only."
+}
+
+# An ISO has arch/x86_64/airootfs.sfs, an rpi5 .img arch/aarch64/, and
+# a usb .img both. Each is inspected.
+inspect_iso() {
+    local iso=$1 arch sfs found=0 failed=0
+    # The imported Arch Linux ARM image has no pacman keyring yet.
+    if [[ $(uname -m) == aarch64 ]]; then
+        { pacman-key --init && pacman-key --populate archlinuxarm; } >/dev/null 2>&1
+    fi
+    # pacman's download sandbox doesn't work in an unprivileged
+    # Arch Linux ARM container; this one is thrown away anyway.
+    pacman -Sy --noconfirm --needed --disable-sandbox squashfs-tools mtools >/dev/null
+
+    echo "Image:    $(basename "${iso}") ($(du -h "${iso}" | cut -f1))"
+    if [[ ${iso} == *.img ]]; then
+        # build.sh puts the FAT partition at 1 MiB.
+        echo "Boot:     $(MTOOLS_SKIP_CHECK=1 mtype -i "${iso}@@1M" ::cmdline.txt)"
+        echo "          $(MTOOLS_SKIP_CHECK=1 mdir -b -i "${iso}@@1M" :: | sed 's|^::/||' | grep -vE '\.dtb$' | sort | paste -sd ' ')"
+    fi
+
+    for arch in x86_64 aarch64; do
+        sfs=/tmp/airootfs-${arch}.sfs
+        if [[ ${iso} == *.img ]]; then
+            MTOOLS_SKIP_CHECK=1 mcopy -n -i "${iso}@@1M" "::arch/${arch}/airootfs.sfs" "${sfs}" 2>/dev/null || continue
+        else
+            bsdtar -xOf "${iso}" "arch/${arch}/airootfs.sfs" >"${sfs}" 2>/dev/null || true
+            [[ -s ${sfs} ]] || continue
+        fi
+        found=1
+        echo
+        echo "== arch/${arch}/airootfs.sfs"
+        inspect_sfs "${sfs}" || failed=1
+        rm -f "${sfs}"
+    done
+    ((found)) || die "no arch/*/airootfs.sfs in $(basename "${iso}")"
+    exit "${failed}"
 }
 
 if [[ -n ${ARCHISO_WIREGUARD_IN_CONTAINER:-} ]]; then

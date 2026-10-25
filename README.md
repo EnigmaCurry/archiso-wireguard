@@ -296,7 +296,10 @@ USB, then NVMe) once. The live system has the tool for it:
 rpi-eeprom-config --edit     # set BOOT_ORDER=0xf641, then reboot
 ```
 
-With the stick removed, the Pi boots the NVMe as usual.
+With the stick removed, the Pi boots the NVMe as usual. With the
+default `BOOT_ORDER=0xf461` (SD, NVMe, USB), a bootable NVMe always
+wins and the stick is never tried. You can also run
+`sudo rpi-eeprom-config --edit` from the OS on the NVMe.
 
 What's different from the ISO:
 
@@ -315,6 +318,47 @@ What's different from the ISO:
    `pacstrap -K /mnt base linux-rpi-16k firmware-raspberrypi ...`, with
    a FAT32 `/boot` partition and `root=PARTUUID=...` in
    `/mnt/boot/cmdline.txt`.
+
+## One stick for both (x86_64 + Raspberry Pi 5)
+
+`just build-usb` builds one disk image that boots **x86_64 PCs (UEFI)**
+and the **Raspberry Pi 5**:
+
+```
+just build-usb
+just inspect
+```
+
+It builds the x86_64 ISO first (`secrets/out/arch-iso-*.iso`, kept),
+then the Pi image with the ISO's UEFI boot files and live system merged
+into its FAT32 partition, as
+`secrets/out/arch-usb-CONTAINS-SECRETS-<date>-x86_64+rpi5.img` (about
+2.7 GB). Write it to a stick the same way as the Pi image above.
+
+The two systems share the partition without colliding:
+
+```
+config.txt cmdline.txt kernel8.img initramfs-linux.img *.dtb overlays/  # Pi 5 firmware
+EFI/BOOT/BOOTx64.EFI loader/ arch/boot/x86_64/                          # x86_64 UEFI (systemd-boot)
+arch/x86_64/airootfs.sfs  arch/aarch64/airootfs.sfs                     # the two live systems
+boot/<uuid>.uuid                                                        # how each finds the stick
+```
+
+The Pi firmware only reads the top-level files and UEFI only `EFI/` and
+`loader/`, and each initramfs loads `arch/<its architecture>/`. The
+ISO's initramfs finds the stick by its `/boot/<uuid>.uuid` file, which is
+archiso's support for copying an ISO onto a FAT32 stick.
+
+Limits:
+
+ * x86_64 boots with **UEFI only**: no legacy BIOS boot (that needs the
+   ISO itself). Secure Boot must be off, as for the ISO.
+ * The partition is FAT32 with MBR type `0x0c`, which the Pi requires.
+   UEFI firmware is meant to boot from an EFI System Partition (type
+   `0xef`), but almost all firmware also boots a FAT32 USB stick with
+   `EFI/BOOT/BOOTx64.EFI`; a strict one may not.
+ * Both systems are the same installer with the same secrets and SSH
+   host keys, as with the separate images.
 
 ## Building for the other architecture
 
@@ -349,6 +393,7 @@ containers; the packages above set it.
 | `just keygen` | Generate a WireGuard key pair for the ISO (in a Podman container) |
 | `just build` | Build the ISO into `secrets/out/` (in a Podman container) |
 | `just build-rpi5` | Build the Raspberry Pi 5 image into `secrets/out/` (in a Podman container) |
+| `just build-usb` | Build one image for x86_64 (UEFI) and the Pi 5 into `secrets/out/` (builds the ISO first) |
 | `just inspect [IMAGE]` | Show secrets/overlay files in an ISO or `.img` and check permissions |
 | `just clean` | Remove the cached pacman packages volumes |
 

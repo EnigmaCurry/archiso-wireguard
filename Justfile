@@ -19,6 +19,10 @@ build:
 build-rpi5:
     ./build.sh rpi5
 
+# Build one USB image that boots x86_64 PCs (UEFI) and the Raspberry Pi 5 into secrets/out/ (builds the ISO first)
+build-usb:
+    ./build.sh usb
+
 # List secrets and overlay files in an ISO or .img (owner/mode only) and check secrets are root-only
 inspect *image:
     ./inspect.sh {{image}}

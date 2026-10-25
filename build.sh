@@ -4,6 +4,10 @@
 # Usage: build.sh [TARGET]
 #   x86_64  (default) a live ISO for x86_64 PCs
 #   rpi5    a USB/SD disk image for the Raspberry Pi 5 (Arch Linux ARM)
+#   usb     one USB disk image that boots both: x86_64 PCs (UEFI) and the
+#           Raspberry Pi 5. Builds the x86_64 ISO first, then the rpi5
+#           image with the ISO's UEFI boot files and airootfs merged into
+#           its FAT32 partition.
 #
 # On the host, this checks the secrets and re-runs itself inside an Arch
 # Linux container with Podman, with the repo bind-mounted at /build.
@@ -35,8 +39,8 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 TARGET=${1:-x86_64}
 case ${TARGET} in
     x86_64) TARGET_ARCH=x86_64 TARGET_PODMAN_ARCH=amd64 ;;
-    rpi5) TARGET_ARCH=aarch64 TARGET_PODMAN_ARCH=arm64 ;;
-    *) die "unknown target '${TARGET}' (x86_64 or rpi5)" ;;
+    rpi5 | usb) TARGET_ARCH=aarch64 TARGET_PODMAN_ARCH=arm64 ;;
+    *) die "unknown target '${TARGET}' (x86_64, rpi5 or usb)" ;;
 esac
 # Staging and work dirs live in the container and vanish with it.
 BUILD=/tmp/archiso-build
@@ -72,6 +76,11 @@ host_container() {
             ;;
         *) die "unsupported Podman host architecture: $(podman info --format '{{.Host.Arch}}')" ;;
     esac
+}
+
+# True for the targets that build the Raspberry Pi 5 live system.
+pi_target() {
+    [[ ${TARGET} == rpi5 || ${TARGET} == usb ]]
 }
 
 # Container side: true when the target isn't this container's architecture.
@@ -133,7 +142,7 @@ stage_profile() {
     mkdir -p "${PROFILE}" "${OUT}"
     cp -a "${RELENG}/." "${PROFILE}/"
     cp -a "${ROOT}/airootfs/." "${PROFILE}/airootfs/"
-    if [[ ${TARGET} == rpi5 ]]; then
+    if pi_target; then
         stage_profile_rpi5
         return
     fi
@@ -273,7 +282,7 @@ stage_secrets() {
 # to the bind mount is owned by that user. --privileged is needed for
 # pacstrap's mounts. Secrets are only bind-mounted, never put in an image.
 run_container() {
-    local arch
+    local arch usb_iso=${1:-}
     command -v podman >/dev/null || die "podman is not installed"
     host_container
     [[ ${IMAGE} == localhost/archlinuxarm:latest ]] && ensure_alarm_image
@@ -289,7 +298,18 @@ run_container() {
         --volume "${ROOT}:/build" \
         --volume "${PACMAN_CACHE_VOLUME}:/var/cache/pacman/pkg" \
         --env ARCHISO_WIREGUARD_IN_CONTAINER=1 \
+        --env ARCHISO_WIREGUARD_USB_ISO="${usb_iso}" \
         "${IMAGE}" /build/build.sh "${TARGET}"
+}
+
+# Host side, usb: build the x86_64 ISO (in its own container), then the
+# rpi5 image with that ISO merged in.
+run_usb() {
+    local iso
+    "${ROOT}/build.sh" x86_64
+    iso=$(ls -t "${OUT}"/*.iso | head -1)
+    echo "Merging into the USB image: ${iso#"${ROOT}"/}"
+    run_container "${iso#"${ROOT}"/}"
 }
 
 # Host side, arm64: create the Arch Linux ARM container image from the
@@ -340,7 +360,7 @@ build_iso() {
     else
         pacman -Syu --noconfirm --needed archiso openssh
     fi
-    if cross_build && [[ ${TARGET} == rpi5 ]]; then
+    if cross_build && pi_target; then
         # Trust Arch Linux ARM's package signing key (Arch Linux ARM's
         # container already has Arch's keyring for the other direction).
         pacman-key --keyserver hkps://keyserver.ubuntu.com --recv-keys "${ALARM_SIGNING_KEY}"
@@ -351,7 +371,7 @@ build_iso() {
     stage_profile
     stage_secrets
     setup_builder
-    if [[ ${TARGET} == rpi5 ]]; then
+    if pi_target; then
         runuser -u builder -- mkarchiso -v -m netboot -w "${WORK}" -o "${BUILD}/out" "${PROFILE}"
         make_rpi5_image
         return
@@ -381,11 +401,24 @@ install_archiso_alarm() {
 # partition of an MBR disk image, without loop devices: the filesystem is
 # built in a file with mkfs.vfat and mtools, then placed after the
 # partition table.
+#
+# For usb, the x86_64 ISO's UEFI boot files (systemd-boot in EFI/BOOT/,
+# loader/, its kernel and initramfs in arch/boot/x86_64/) and
+# arch/x86_64/airootfs.sfs go on the same partition. Nothing collides:
+# the Pi firmware only reads the top-level files, UEFI only EFI/ and
+# loader/, and each initramfs loads arch/$(uname -m)/. The ISO's
+# initramfs can't find the partition by its ISO volume UUID, so it falls
+# back to searching for its /boot/<uuid>.uuid file (archiso's support
+# for copying an ISO onto a FAT32 stick).
 make_rpi5_image() {
     local fat=${BUILD}/fat fatimg=${BUILD}/fat.img disk volid uuid name kib
     # shellcheck disable=SC2034,SC2154 # set and used by profiledef.sh
     name=$(declare -A file_permissions && source "${PROFILE}/profiledef.sh" \
         && echo "${iso_name}-${iso_version}-aarch64.img")
+    if [[ ${TARGET} == usb ]]; then
+        name=${name/arch-rpi5-/arch-usb-}
+        name=${name/-aarch64.img/-x86_64+rpi5.img}
+    fi
     disk=${BUILD}/${name}
 
     mkdir -p "${fat}"
@@ -398,6 +431,14 @@ make_rpi5_image() {
     mkdir -p "${fat}/arch"
     cp -r "${BUILD}/out/arch/." "${fat}/arch/"
     rm -rf "${fat}/arch/boot"
+    if [[ ${TARGET} == usb ]]; then
+        # Everything but the ISO 9660-only boot files: syslinux (BIOS boot
+        # from the ISO's El Torito image) and GRUB's ISO loopback config.
+        bsdtar -xf "/build/${ARCHISO_WIREGUARD_USB_ISO}" -C "${fat}" \
+            --exclude 'boot/syslinux' --exclude 'boot/grub' --exclude 'arch/grubenv'
+        [[ -f ${fat}/EFI/BOOT/BOOTx64.EFI && -d ${fat}/arch/x86_64 ]] \
+            || die "${ARCHISO_WIREGUARD_USB_ISO} has no UEFI boot files or x86_64 airootfs"
+    fi
 
     # The archiso hook finds the boot partition by its FAT volume ID,
     # unique per build (like the ISO's search UUID).
@@ -411,7 +452,10 @@ make_rpi5_image() {
     # Room for the files plus FAT overhead and slack.
     kib=$(( $(du -sk "${fat}" | cut -f1) * 105 / 100 + 64 * 1024 ))
     kib=$(( (kib + 1023) / 1024 * 1024 ))
-    mkfs.vfat -F 32 -n "${RPI5_LABEL}" -i "${volid}" -C "${fatimg}" "${kib}"
+    # -h: the boot sector's "hidden sectors" must be the partition's start
+    # sector (2048, below). mkfs.vfat -C on a plain file would write 0,
+    # and boot firmware may use it to locate the filesystem.
+    mkfs.vfat -F 32 -h 2048 -n "${RPI5_LABEL}" -i "${volid}" -C "${fatimg}" "${kib}"
     MTOOLS_SKIP_CHECK=1 mcopy -s -i "${fatimg}" "${fat}"/* ::/
 
     # 1 MiB for the MBR, then the FAT32 (LBA) partition, marked bootable.
@@ -429,6 +473,8 @@ main() {
     check_secrets
     if [[ -n ${ARCHISO_WIREGUARD_IN_CONTAINER:-} ]]; then
         build_iso
+    elif [[ ${TARGET} == usb ]]; then
+        run_usb
     else
         run_container
     fi
