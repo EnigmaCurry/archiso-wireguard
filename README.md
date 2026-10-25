@@ -8,6 +8,15 @@ Build a personal Arch Linux live USB that comes up **online and on your
 WireGuard VPN by itself**, so you can SSH in from anywhere and drive the
 install remotely.
 
+Installing on a headless PC or a Raspberry Pi with the stock installer
+means borrowing a monitor and keyboard, typing a WiFi passphrase into
+`iwctl`, setting up SSH, getting your workstation onto the same network
+(or chaining jump hosts), and cleaning a stale entry out of
+`known_hosts`, every single time. BOOMSTICK does all of that for you:
+plug it in, power on, and `ssh arch-iso`. The blog post
+[Arch Linux BOOMSTICK](https://book.rymcg.tech/blog/linux/archlinux-boomstick/)
+walks through it start to finish.
+
 It is the stock Arch Linux installer (archiso's `releng` profile) plus:
 
  * **WiFi** networks that iwd joins automatically (wired ethernet is
@@ -176,15 +185,32 @@ generates its SSH host keys and writes them back to
 `archiso-config/ssh/host/` on the stick, so every later boot presents
 the same fingerprint.
 
-Once the webhook arrives (or after a minute or two), SSH in over the
-VPN:
+Every machine you boot the stick on comes up with the same hostname
+(`arch-iso`), WireGuard address and SSH host key, so give it a name in
+your workstation's `~/.ssh/config`:
 
 ```
-ssh root@10.0.0.2
+Host arch-iso
+    HostName 10.0.0.2
+    User root
+    HostKeyAlias arch-iso
 ```
 
-Without WireGuard, SSH to the LAN address from the webhook (or from
-`ip addr` on the console) instead.
+`HostKeyAlias` stores the host key in `known_hosts` under the name
+`arch-iso` rather than an IP address. Once the webhook arrives (or after
+a minute or two), SSH in over the VPN:
+
+```
+ssh arch-iso
+```
+
+Without WireGuard, use the LAN address from the webhook (or from
+`ip addr` on the console) instead. Overriding only the address keeps
+the same host key check:
+
+```
+ssh -o HostName=192.168.1.50 arch-iso
+```
 
 To confirm the host key on first connect, compare with the fingerprint
 the live system printed on the console, or compute it from the stick:
@@ -207,14 +233,10 @@ Leave `wireguard/wg0.conf` empty or fully commented out to boot without
 WireGuard: the stick then only has SSH on the LAN, and the webhook
 reports `WireGuard: not configured`.
 
-Make a new key pair just for this stick:
-
-```
-just keygen
-```
-
-(or `wg genkey | tee /dev/stderr | wg pubkey` anywhere you have
-`wireguard-tools`). Then fill in the template:
+The stick is a client of a WireGuard server you already run. Most VPN
+servers and routers will provision a client for you: add a new peer for
+the stick on the server (its own, not your laptop's), and paste the
+config it gives you into `wireguard/wg0.conf`. It should look like this:
 
 ```ini
 [Interface]
@@ -236,8 +258,17 @@ PersistentKeepalive = 25
  * `DNS = ...` is supported if you want to resolve names through the
    VPN.
 
-Then add the stick as a peer **on your WireGuard server**, using its
-*public* key and the address you gave it:
+If your server doesn't provision clients, make a new key pair just for
+this stick:
+
+```
+just keygen
+```
+
+(or `wg genkey | tee /dev/stderr | wg pubkey` anywhere you have
+`wireguard-tools`). Put the private key in `wg0.conf` as above, then add
+the stick as a peer **on your WireGuard server**, using its *public* key
+and the address you gave it:
 
 ```ini
 [Peer]
@@ -250,6 +281,13 @@ AllowedIPs = 10.0.0.2/32
 
 Put the public key(s) you will log in with in `ssh/authorized_keys`, one
 per line. Without at least one, nobody can log in over SSH at all.
+
+If your keys are on GitHub, fetch them from your profile (then read the
+file and remove any key you don't want to have root on the stick):
+
+```
+curl -fsSL https://github.com/YOUR_USERNAME.keys >> secrets/ssh/authorized_keys
+```
 
 `ssh/host/` is created by the live system on its first boot and holds
 that stick's SSH host keys. Delete the directory to get new ones on the
