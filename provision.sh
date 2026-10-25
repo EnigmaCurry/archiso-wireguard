@@ -2,8 +2,9 @@
 # Copy secrets/ onto a stick's config partition, as archiso-config/.
 #
 # Usage: provision.sh [TARGET]
-#   (default)      the mounted config partition of a stick, found by its
-#                  ARCH_CONFIG filesystem label
+#   (default)      the config partition of a stick, found by its
+#                  ARCH_CONFIG filesystem label and mounted with
+#                  udisksctl if it isn't mounted already
 #   <directory>    an already-mounted config partition, e.g.
 #                  /run/media/you/ARCH_CONFIG
 #   /dev/sdX       a stick (or /dev/sdX1, its FAT partition), unmounted
@@ -24,14 +25,31 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SECRETS="${ROOT}/secrets"
 TEMPLATES="${ROOT}/config-templates"
-OUT="${ROOT}/out"
 CONFIG_DIR=archiso-config
 # Filesystem label build.sh gives the config partition, and how a
 # written stick is found again here.
 FAT_LABEL=${FAT_LABEL:-ARCH_CONFIG}
 
+# Set when we mounted the stick ourselves, so we can unmount it again.
+MOUNTED_DEV=
+TARGET=
+
 die() { echo "ERROR: $*" >&2; exit 1; }
 warn() { echo "WARNING: $*" >&2; }
+
+# Undo our own mount, on the way out whether or not this succeeded, so
+# the stick is flushed and can be pulled.
+unmount_if_ours() {
+    local dev=${MOUNTED_DEV}
+    [[ -n ${dev} ]] || return 0
+    MOUNTED_DEV=
+    if udisksctl unmount -b "${dev}" >/dev/null 2>&1; then
+        echo "Unmounted ${dev}."
+    else
+        warn "could not unmount ${dev}: do it yourself before pulling the stick"
+    fi
+}
+trap unmount_if_ours EXIT
 
 # True if the file exists and has anything besides comments and blanks.
 has_content() { [[ -f $1 ]] && grep -qvE '^\s*(#|$)' "$1"; }
@@ -63,19 +81,36 @@ check_config() {
         || warn "no WEBHOOK_URL in secrets/webhook.env (webhook disabled)"
 }
 
-# With no argument: the stick. A written stick's config partition is
-# labelled ARCH_CONFIG, so look for it mounted (which is what a desktop
-# automounter leaves behind), and failing that say where it is.
+# Where the config partition is mounted, or empty.
+label_mountpoint() {
+    findmnt -rn -o TARGET -S "LABEL=${FAT_LABEL}" 2>/dev/null | head -1
+}
+
+# With no argument: the stick, found by the label build.sh gave its
+# config partition. Sets TARGET (not stdout: mounting has to record the
+# device in MOUNTED_DEV, which a $( ) subshell would throw away).
+#
+# If the label is there but unmounted, mount it with udisksctl rather
+# than telling the user to. FAT stores no ownership, so mounting it by
+# hand as root makes every file root-owned and uneditable; udisks mounts
+# it uid=<caller> under /run/media, which is the point.
 find_target() {
-    local mnt dev
-    mnt=$(findmnt -rn -o TARGET -S "LABEL=${FAT_LABEL}" 2>/dev/null | head -1)
-    if [[ -n ${mnt} ]]; then
-        echo "${mnt}"
-        return
-    fi
+    local dev
+    # || true: findmnt exits 1 when the label isn't mounted, which with
+    # set -e would end the script before the fallbacks below.
+    TARGET=$(label_mountpoint) || true
+    [[ -n ${TARGET} ]] && return 0
     dev=$(blkid -L "${FAT_LABEL}" 2>/dev/null) || true
-    [[ -n ${dev} ]] && die "${FAT_LABEL} is on ${dev} but not mounted: mount it and try again, or pass ${dev} (needs root)"
-    die "no mounted ${FAT_LABEL} filesystem: plug in a stick written from out/, or name a target (a mount point, a /dev node, or an image)"
+    [[ -n ${dev} ]] \
+        || die "no ${FAT_LABEL} filesystem: plug in a stick written from out/, or name a target (a mount point, a /dev node, or an image)"
+    command -v udisksctl >/dev/null \
+        || die "${FAT_LABEL} is on ${dev} but not mounted, and udisksctl is not installed: mount it with -o uid=$(id -u),gid=$(id -g) and try again"
+    udisksctl mount -b "${dev}" >/dev/null \
+        || die "could not mount ${dev}: mount it with -o uid=$(id -u),gid=$(id -g) and try again"
+    MOUNTED_DEV=${dev}
+    TARGET=$(label_mountpoint) || true
+    [[ -n ${TARGET} ]] || die "mounted ${dev}, but cannot tell where"
+    echo "Mounted ${dev} at ${TARGET}"
 }
 
 # What gets copied: everything in secrets/, plus the README for whoever
@@ -194,14 +229,23 @@ main() {
         return
     fi
     check_config
-    [[ -n ${target} ]] || target=$(find_target)
-    echo "Target: ${target#"${ROOT}"/}"
-    if [[ -d ${target} ]]; then
-        provision_dir "${target}"
-        echo "Unmount the stick and boot it."
+    if [[ -n ${target} ]]; then
+        TARGET=${target}
     else
-        provision_mtools "${target}"
-        [[ -b ${target} ]] && echo "Unplug the stick and boot it." \
+        find_target
+    fi
+    echo "Target: ${TARGET#"${ROOT}"/}"
+    if [[ -d ${TARGET} ]]; then
+        provision_dir "${TARGET}"
+        if [[ -n ${MOUNTED_DEV} ]]; then
+            unmount_if_ours
+            echo "Pull the stick and boot it."
+        else
+            echo "Unmount the stick and boot it."
+        fi
+    else
+        provision_mtools "${TARGET}"
+        [[ -b ${TARGET} ]] && echo "Unplug the stick and boot it." \
             || echo "This image is no longer generic: write it to a stick (and don't publish it)."
     fi
 }

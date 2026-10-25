@@ -105,8 +105,23 @@ sudo dd if=out/arch-usb-<date>-x86_64+rpi5.img \
 
 ### 4. Configure the stick
 
-Replug the stick. Its FAT32 partition (labelled `ARCH_CONFIG`) mounts on
-any computer and contains:
+Replug the stick and mount its FAT32 partition, which is labelled
+`ARCH_CONFIG`. Many desktops mount it automatically; otherwise:
+
+```
+udisksctl mount -b /dev/sdX1    # no sudo; mounts at /run/media/you/ARCH_CONFIG
+```
+
+Don't reach for `sudo mount` here. FAT stores no ownership, so the
+kernel invents it from mount options, and the default is `uid=0`: every
+file looks root-owned and you can't edit it as yourself. `udisksctl`
+passes your own uid. By hand the equivalent is:
+
+```
+sudo mount -o uid=$(id -u),gid=$(id -g) /dev/sdX1 /mnt
+```
+
+The partition contains:
 
 ```
 archiso-config/
@@ -135,10 +150,10 @@ $EDITOR secrets/...  # fill them in
 just provision       # copy them to the stick
 ```
 
-With no argument, `just provision` writes to whichever filesystem
-labelled `ARCH_CONFIG` is mounted — i.e. the stick you just plugged in,
-wherever your desktop automounted it. If it isn't mounted it says where
-it found it instead of guessing.
+With no argument, `just provision` goes looking for the stick itself:
+whichever filesystem is labelled `ARCH_CONFIG`, mounted or not. If it
+has to mount it, it uses `udisksctl` (so the ownership is right) and
+unmounts it again when it's done, leaving the stick ready to pull.
 
 It checks the files before copying (a `wg0.conf` without a
 `PersistentKeepalive`, an `authorized_keys` with no key), so a typo

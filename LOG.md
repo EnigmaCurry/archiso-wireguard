@@ -966,3 +966,41 @@ Tested: no stick -> the error names what to do; a mounted stick (stubbed
 `findmnt`, since nothing on the dev host carries a filesystem label) ->
 `archiso-config/` written to it, including an SSID with a space; an
 explicit `.img` -> written via mtools with the not-generic warning.
+
+## `just provision` mounts the stick itself (2026-10-24)
+
+Mounting the config partition by hand is a trap, and the first attempt
+on real hardware hit it: FAT stores no ownership, so the vfat driver
+makes it up from mount options, and `sudo mount` defaults to `uid=0`.
+The stick mounts, and then the files it exists to let you edit are
+root-owned and unwritable as your own user.
+
+`udisksctl mount -b /dev/sdX1` is the answer -- udisks passes
+`uid=<caller>,gid=<caller>` and mounts under `/run/media/<user>/` with
+no root at all:
+
+```
+rw,nosuid,nodev,relatime,uid=1000,gid=100,fmask=0022,dmask=0022,...
+```
+
+So `find_target` now does that itself when it finds the `ARCH_CONFIG`
+label unmounted, records the device in `MOUNTED_DEV`, and unmounts it
+again on the way out (via an EXIT trap, so a failure part-way through
+still releases the stick). A partition the user had already mounted is
+used as-is and left alone. README step 4 documents the `udisksctl` line
+and why `sudo mount` is wrong.
+
+`find_target` had to stop returning its answer on stdout for this: it
+was called as `target=$(find_target)`, and a `$( )` subshell would have
+thrown `MOUNTED_DEV` away. It sets `TARGET` instead.
+
+One bug caught by testing: `TARGET=$(findmnt ... -S LABEL=...)` exits 1
+when nothing is mounted, and under `set -e` that ended the script
+before the unmounted-device fallback could run -- the first run printed
+nothing at all and exited 1. The query is now a `label_mountpoint`
+helper called with `|| true`.
+
+Tested with `udisksctl loop-setup` on a FAT image labelled `TESTCFG`
+(not `ARCH_CONFIG`, to keep the real stick out of it): unmounted label
+-> mounted, written, unmounted; already-mounted label -> used and left
+mounted; missing label -> clean error.
