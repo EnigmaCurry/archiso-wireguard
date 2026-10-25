@@ -46,8 +46,8 @@ has_content() { [[ -f $1 ]] && grep -qvE '^\s*(#|$)' "$1"; }
 # The label is the usual path, not the exception: archiso boots
 # copytoram=auto, so a machine with enough RAM copies the live system
 # to RAM and the initramfs unmounts /run/archiso/bootmnt before
-# switch_root. It is also the only way to configure an ISO, whose
-# ISO 9660 filesystem cannot be edited after dd.
+# switch_root. It also means the configuration does not have to be on
+# the device that was booted: a second stick with that label works.
 find_config() {
     local dev deadline
     if [[ -d ${BOOTMNT}/${CONFIG_DIR} ]]; then

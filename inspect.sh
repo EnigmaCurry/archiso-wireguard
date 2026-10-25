@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Show what this repo put into a built image: image
-# name, hostname, and the owner/mode of every overlay file (never their
-# contents), plus the config partition's archiso-config/ listing for an
-# .img. Fails if it contains any secret, which would make the image
-# unsafe to publish: the image is meant to be generic and configured
-# afterwards, on the stick.
+# Show what this repo put into a built image: its name, hostname, the
+# owner/mode of every overlay file (never their contents), and the
+# config partition's archiso-config/ listing. Fails if the image
+# contains any secret, which would make it unsafe to publish: images
+# are generic and are configured afterwards, on the stick.
 #
 # Usage: inspect.sh [IMAGE]   (default: newest image in out/)
 # A usb image has two live systems (x86_64 and aarch64); both are checked.
@@ -48,7 +47,7 @@ run_container() {
     local iso=${1:-} image volume
     command -v podman >/dev/null || die "podman is not installed"
     if [[ -z ${iso} ]]; then
-        iso=$(ls -t "${OUT}"/*.iso "${OUT}"/*.img 2>/dev/null | head -1) || true
+        iso=$(ls -t "${OUT}"/*.img 2>/dev/null | head -1) || true
         [[ -n ${iso} ]] || die "no image in out/ (run: just build, just build-rpi5 or just build-usb)"
     fi
     [[ -f ${iso} ]] || die "no such image: ${iso}"
@@ -137,8 +136,9 @@ inspect_config() {
     fi
 }
 
-# An ISO has arch/x86_64/airootfs.sfs, an rpi5 .img arch/aarch64/, and
-# a usb .img both. Each is inspected.
+# An x86_64 image has arch/x86_64/airootfs.sfs, an rpi5 image
+# arch/aarch64/, and a usb image both. Each is inspected. A plain ISO
+# (the usb target's intermediate) can be passed in too.
 inspect_iso() {
     local iso=$1 arch sfs config cmdline found=0 failed=0
     # The imported Arch Linux ARM image has no pacman keyring yet.

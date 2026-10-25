@@ -4,7 +4,7 @@
 # Waits for a WireGuard handshake on wg0 (up to WG_HANDSHAKE_TIMEOUT
 # seconds), then POSTs a plain-text message to WEBHOOK_URL. The message
 # is sent even if WireGuard failed, and then includes the error. If the
-# ISO was built without WireGuard, it doesn't wait.
+# stick has no WireGuard config, it doesn't wait.
 #
 # Usage: arch-iso-webhook [--dry-run]   (--dry-run prints instead of POSTing)
 set -uo pipefail

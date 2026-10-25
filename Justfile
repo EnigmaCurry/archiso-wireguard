@@ -19,7 +19,7 @@ build:
 build-rpi5:
     ./build.sh rpi5
 
-# Build one generic USB image that boots x86_64 PCs (UEFI) and the Raspberry Pi 5 into out/ (builds the ISO first)
+# Build one generic USB image that boots x86_64 PCs (UEFI) and the Raspberry Pi 5 into out/ (needs both architectures)
 build-usb:
     ./build.sh usb
 

@@ -10,8 +10,9 @@ It is the stock Arch Linux installer (archiso's `releng` profile) plus:
    preferred when both are available).
  * A **WireGuard** tunnel (`wg-quick@wg0`) to your own peer, brought up
    at boot, retrying until the endpoint's DNS name resolves.
- * **SSH** as root with your `authorized_keys` (key-only, no passwords)
-   and fixed host keys, so the fingerprint is the same on every boot.
+ * **SSH** as root with your `authorized_keys` (key-only, no passwords),
+   and host keys the stick makes for itself on its first boot and keeps,
+   so the fingerprint doesn't change from one boot to the next.
  * Hostname `arch-iso`.
  * An optional **boot webhook** (e.g. ntfy or matrix-hookshot) that
    reports the LAN, public and WireGuard addresses, or the WireGuard
@@ -492,7 +493,9 @@ image a secret too, so don't publish a provisioned one).
 `build.sh` starts a throwaway `archlinux` container (rootless Podman,
 `--privileged`) with this repo bind-mounted. Inside, it copies archiso's
 stock `releng` profile, lays [`airootfs/`](airootfs) on top, and runs
-`mkarchiso`. No secret is involved at any point, so the build is
+`mkarchiso`. The result is packed into an MBR disk image with a single
+FAT32 partition holding the live system and the `archiso-config/`
+templates. No secret is involved at any point, so the build is
 reproducible by anyone and its output is safe to share. Every step,
 decision and problem along the way is recorded in [LOG.md](LOG.md).
 

@@ -267,7 +267,7 @@ setup_builder() {
 
 # Container side: install archiso and build. Files builder creates would
 # show up on the host with a subordinate uid, so builder only writes inside
-# the container and root copies the ISO out (owned by the host user).
+# the container and root copies the image out (owned by the host user).
 build_iso() {
     if [[ $(uname -m) == aarch64 ]]; then
         install_archiso_alarm

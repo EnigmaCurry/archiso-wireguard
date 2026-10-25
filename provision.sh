@@ -175,8 +175,8 @@ main() {
     check_config
     if [[ -z ${target} ]]; then
         target=$(ls -t "${OUT}"/*.img 2>/dev/null | head -1) \
-            || die "no image in out/ (run: just build-usb)"
-        [[ -n ${target} ]] || die "no image in out/ (run: just build-usb)"
+            || die "no image in out/ (run: just build, just build-rpi5 or just build-usb)"
+        [[ -n ${target} ]] || die "no image in out/ (run: just build, just build-rpi5 or just build-usb)"
         echo "Target: ${target#"${ROOT}"/}"
     fi
     if [[ -d ${target} ]]; then
