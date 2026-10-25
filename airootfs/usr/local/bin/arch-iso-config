@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# Install this live system's configuration from the config partition.
+#
+# The image is generic and holds no secrets: WiFi, WireGuard, the SSH
+# authorized_keys and the webhook URL live in an archiso-config/
+# directory on the FAT32 partition the stick boots from, which the user
+# fills in after writing the image. This runs in early boot, before
+# iwd, wg-quick, sshd and the boot webhook, and copies them into the
+# live system's tmpfs, root-only.
+#
+# SSH host keys are generated on the first boot and written back to the
+# config partition, so the fingerprint is the same on every later boot.
+#
+# Usage: arch-iso-config          (started by arch-iso-config.service)
+#
+# Missing or commented-out files are not an error: the feature they
+# configure is skipped and boot continues.
+set -uo pipefail
+
+# Directory on the config partition, and the filesystem label used to
+# find that partition when it is not the one we booted from.
+CONFIG_DIR=${CONFIG_DIR:-archiso-config}
+CONFIG_LABEL=${CONFIG_LABEL:-ARCH_CONFIG}
+# Where archiso's initramfs leaves the boot partition.
+BOOTMNT=${BOOTMNT:-/run/archiso/bootmnt}
+# Where we mount a config partition we found ourselves.
+FALLBACK_MNT=/run/arch-iso/config
+# Seconds to wait for a labelled config partition to appear: USB
+# enumeration can be slower than early boot.
+LABEL_WAIT=${LABEL_WAIT:-10}
+HOST_KEY_TYPES=(ed25519 ecdsa rsa)
+
+SRC=
+FALLBACK_MOUNTED=0
+
+msg() { echo "$*"; }
+warn() { echo "WARNING: $*" >&2; }
+
+# True if the file exists and has anything besides comments and blanks.
+has_content() { [[ -f $1 ]] && grep -qvE '^\s*(#|$)' "$1"; }
+
+# Find the config directory and set SRC. Prefers the partition this
+# system booted from, when archiso left it mounted; otherwise any
+# filesystem labelled $CONFIG_LABEL.
+#
+# The label is the usual path, not the exception: archiso boots
+# copytoram=auto, so a machine with enough RAM copies the live system
+# to RAM and the initramfs unmounts /run/archiso/bootmnt before
+# switch_root. It is also the only way to configure an ISO, whose
+# ISO 9660 filesystem cannot be edited after dd.
+find_config() {
+    local dev deadline
+    if [[ -d ${BOOTMNT}/${CONFIG_DIR} ]]; then
+        SRC="${BOOTMNT}/${CONFIG_DIR}"
+        return 0
+    fi
+    udevadm settle --timeout=5 >/dev/null 2>&1
+    deadline=$((SECONDS + LABEL_WAIT))
+    while :; do
+        dev=$(blkid -L "${CONFIG_LABEL}" 2>/dev/null)
+        [[ -n ${dev} ]] && break
+        ((SECONDS < deadline)) || return 1
+        sleep 1
+    done
+    mkdir -p "${FALLBACK_MNT}"
+    # Read-write if we can (to save the host keys), and on FAT with a
+    # umask that keeps the secrets off limits to anyone but root.
+    mount -o rw,umask=0077 "${dev}" "${FALLBACK_MNT}" 2>/dev/null \
+        || mount -o rw "${dev}" "${FALLBACK_MNT}" 2>/dev/null \
+        || mount -o ro "${dev}" "${FALLBACK_MNT}" \
+        || { warn "found ${CONFIG_LABEL} on ${dev}, but could not mount it"; return 1; }
+    FALLBACK_MOUNTED=1
+    if [[ ! -d ${FALLBACK_MNT}/${CONFIG_DIR} ]]; then
+        warn "${dev} (${CONFIG_LABEL}) has no ${CONFIG_DIR}/ directory"
+        return 1
+    fi
+    SRC="${FALLBACK_MNT}/${CONFIG_DIR}"
+}
+
+# WiFi: iwd network files, one per network. iwd wants its state
+# directory root-only.
+install_wifi() {
+    local f n=0
+    shopt -s nullglob
+    for f in "${SRC}"/wifi/*.psk "${SRC}"/wifi/*.open "${SRC}"/wifi/*.8021x; do
+        [[ -f ${f} ]] || continue
+        mkdir -p /var/lib/iwd && chmod 700 /var/lib/iwd || continue
+        install -m 600 "${f}" "/var/lib/iwd/$(basename "${f}")" && ((n++))
+    done
+    shopt -u nullglob
+    if ((n)); then
+        msg "WiFi: ${n} network file(s) installed in /var/lib/iwd"
+    else
+        msg "WiFi: no networks configured (wired only)"
+    fi
+}
+
+# WireGuard. Without a config, wg-quick@wg0 skips itself: see
+# /etc/systemd/system/wg-quick@wg0.service.d/.
+install_wireguard() {
+    if has_content "${SRC}/wireguard/wg0.conf"; then
+        install -D -m 600 "${SRC}/wireguard/wg0.conf" /etc/wireguard/wg0.conf \
+            && chmod 700 /etc/wireguard \
+            && msg "WireGuard: wg0.conf installed"
+    else
+        msg "WireGuard: not configured (wg-quick@wg0 will be skipped)"
+    fi
+}
+
+install_authorized_keys() {
+    if has_content "${SRC}/ssh/authorized_keys"; then
+        install -D -m 600 "${SRC}/ssh/authorized_keys" /root/.ssh/authorized_keys \
+            && chmod 700 /root/.ssh \
+            && msg "SSH: authorized_keys installed"
+    else
+        warn "no keys in ${CONFIG_DIR}/ssh/authorized_keys: nobody can log in over SSH"
+    fi
+}
+
+# The webhook service only starts if this file exists.
+install_webhook() {
+    if grep -qE '^\s*WEBHOOK_URL=.+' "${SRC}/webhook.env" 2>/dev/null; then
+        install -D -m 600 "${SRC}/webhook.env" /etc/arch-iso/webhook.env \
+            && chmod 700 /etc/arch-iso \
+            && msg "Webhook: webhook.env installed"
+    else
+        msg "Webhook: not configured"
+    fi
+}
+
+# Write newly generated host keys back to the config partition, so the
+# next boot presents the same fingerprint. The boot partition is mounted
+# read-only, so flip it for the copy. On read-only media this fails and
+# the keys stay ephemeral.
+save_host_keys() {
+    local type mnt opts remounted=0 ok=1
+    mnt=$(findmnt -n -o TARGET --target "${SRC}" 2>/dev/null)
+    opts=$(findmnt -n -o OPTIONS --target "${SRC}" 2>/dev/null)
+    if [[ -z ${mnt} ]]; then
+        warn "cannot tell where ${SRC} is mounted: host keys are ephemeral"
+        return 1
+    fi
+    if [[ ,${opts}, == *,ro,* ]]; then
+        if ! mount -o remount,rw "${mnt}" 2>/dev/null; then
+            warn "${mnt} is read-only: host keys are ephemeral and change on every boot"
+            return 1
+        fi
+        remounted=1
+    fi
+    mkdir -p "${SRC}/ssh/host" || ok=0
+    for type in "$@"; do
+        cp "/etc/ssh/ssh_host_${type}_key" "${SRC}/ssh/host/" || ok=0
+        cp "/etc/ssh/ssh_host_${type}_key.pub" "${SRC}/ssh/host/" || ok=0
+    done
+    sync
+    if ((remounted)); then
+        mount -o remount,ro "${mnt}" || warn "could not remount ${mnt} read-only"
+    fi
+    if ((ok)); then
+        msg "SSH: host keys saved to ${CONFIG_DIR}/ssh/host"
+    else
+        warn "could not save the host keys: they are ephemeral and change on every boot"
+    fi
+}
+
+# Host keys from the config partition, generating and saving any that
+# are missing. Done before sshd (and before sshdgenkeys.service, which
+# would otherwise make its own throwaway keys).
+install_host_keys() {
+    local type key generated=()
+    for type in "${HOST_KEY_TYPES[@]}"; do
+        key="${SRC}/ssh/host/ssh_host_${type}_key"
+        if [[ -f ${key} && -f ${key}.pub ]]; then
+            install -m 600 "${key}" "/etc/ssh/ssh_host_${type}_key"
+            install -m 644 "${key}.pub" "/etc/ssh/ssh_host_${type}_key.pub"
+        else
+            rm -f "/etc/ssh/ssh_host_${type}_key" "/etc/ssh/ssh_host_${type}_key.pub"
+            ssh-keygen -q -t "${type}" -N '' -C root@arch-iso \
+                -f "/etc/ssh/ssh_host_${type}_key" || continue
+            generated+=("${type}")
+        fi
+    done
+    if ((${#generated[@]})); then
+        msg "SSH: generated host keys (${generated[*]}) on this first boot"
+        save_host_keys "${generated[@]}"
+    else
+        msg "SSH: host keys loaded from the config partition"
+    fi
+    # The fingerprints to expect on the first SSH connection.
+    for type in "${HOST_KEY_TYPES[@]}"; do
+        ssh-keygen -lf "/etc/ssh/ssh_host_${type}_key.pub" 2>/dev/null | sed 's/^/  /'
+    done
+}
+
+main() {
+    if ! find_config; then
+        warn "no ${CONFIG_DIR}/ on the boot partition or on a filesystem labelled ${CONFIG_LABEL}"
+        warn "booting unconfigured: no WiFi, no WireGuard, no SSH login, no webhook"
+        exit 0
+    fi
+    msg "Configuration: ${SRC}"
+    install_wifi
+    install_wireguard
+    install_authorized_keys
+    install_webhook
+    install_host_keys
+    if ((FALLBACK_MOUNTED)); then
+        umount "${FALLBACK_MNT}" || warn "could not unmount ${FALLBACK_MNT}"
+    fi
+}
+
+main "$@"

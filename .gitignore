@@ -1,3 +1,4 @@
-# Secrets, the transient build dir, and ISOs built from them.
-# Never commit these.
+# Your configuration and the images built from this repo.
+# Never commit secrets/.
 /secrets/
+/out/

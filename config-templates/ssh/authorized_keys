@@ -1,0 +1,5 @@
+# Public keys allowed to SSH in as root, one per line (OpenSSH format).
+# Without at least one key you cannot log in over SSH at all.
+# Uncomment and replace with your own:
+#
+# ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@laptop

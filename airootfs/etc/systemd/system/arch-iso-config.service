@@ -1,0 +1,19 @@
+[Unit]
+Description=Load the live system's configuration from the config partition
+Documentation=https://github.com/EnigmaCurry/archiso-wireguard
+DefaultDependencies=no
+Conflicts=shutdown.target
+After=systemd-udevd.service systemd-tmpfiles-setup.service
+Before=shutdown.target sysinit.target
+# Everything that consumes what this installs. Ordering before
+# sysinit.target already covers them; naming them keeps it true if one
+# ever moves earlier.
+Before=iwd.service sshd.service sshdgenkeys.service wg-quick@wg0.service arch-iso-webhook.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/arch-iso-config
+
+[Install]
+WantedBy=sysinit.target

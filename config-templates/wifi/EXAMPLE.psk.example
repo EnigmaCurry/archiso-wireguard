@@ -1,0 +1,13 @@
+# iwd network file, see iwd.network(5). Copy it to <SSID>.psk in this
+# directory, one file per network (.example files are ignored).
+#
+# Filename: the SSID as-is if it only has letters, digits, space, - and _.
+# Otherwise "=" + the SSID's bytes in hex:
+#   echo "=$(printf '%s' 'Café' | od -An -tx1 | tr -d ' \n').psk"
+# Open networks use <SSID>.open (may be empty).
+#
+# [Security]
+# Passphrase=your wifi password
+#
+# [Settings]
+# Hidden=true

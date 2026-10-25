@@ -1,6 +1,7 @@
 [Unit]
 Description=Report addresses and WireGuard status to a webhook
-# Only present when secrets/webhook.env was baked into the ISO.
+# Only present when the config partition has a WEBHOOK_URL
+# (see arch-iso-config.service).
 ConditionPathExists=/etc/arch-iso/webhook.env
 Wants=network-online.target
 After=network-online.target wg-quick@wg0.service

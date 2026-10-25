@@ -1,6 +1,6 @@
 # archiso-wireguard
 
-Build a personal Arch Linux live ISO that comes up **online and on your
+Build a personal Arch Linux live USB that comes up **online and on your
 WireGuard VPN by itself**, so you can SSH in from anywhere and drive the
 install remotely.
 
@@ -17,14 +17,19 @@ It is the stock Arch Linux installer (archiso's `releng` profile) plus:
    reports the LAN, public and WireGuard addresses, or the WireGuard
    error if the tunnel didn't come up.
 
-The ISO boots without any prompts.
+The image boots without any prompts.
+
+**The image itself is generic and contains no secrets.** Your WiFi
+passwords, WireGuard key and SSH keys live in an `archiso-config/`
+directory on the stick's FAT32 partition, which you fill in *after*
+writing the image. The same image works for everyone; the stick is what
+is yours.
 
 > [!WARNING]
-> **The ISO contains secrets**: your WiFi passwords, the WireGuard
-> private key, and the SSH host keys. Anyone with the ISO or the USB
-> stick can join your WiFi and your VPN. Keep it in your possession, and
-> give each image its own WireGuard key so you can revoke it alone. Built
-> ISOs are named `arch-iso-CONTAINS-SECRETS-*.iso` as a reminder.
+> **A configured stick contains secrets**, in plain text, readable by
+> any computer it is plugged into. Anyone holding it can join your WiFi
+> and your VPN. Keep it in your possession, and give each stick its own
+> WireGuard key so you can revoke one on its own.
 
 ## Requirements
 
@@ -36,7 +41,7 @@ The ISO boots without any prompts.
    which most distros set up when the user is created.
  * [just](https://github.com/casey/just).
  * About 8 GB of free disk space (build workspace, package cache and the
-   ISO) and an internet connection.
+   image) and an internet connection.
 
 You don't need archiso or any Arch packages on the host: the build runs
 inside an `archlinux` container.
@@ -48,8 +53,8 @@ sudo pacman -S --needed podman just git
 ```
 
 You also need a **WireGuard peer** (a server, router, or VPN hub) with a
-public IP or DNS name that the ISO can connect to, unless you build
-without WireGuard (see step 3).
+public IP or DNS name that the stick can connect to, unless you use it
+without WireGuard.
 
 ## Bootstrap
 
@@ -60,44 +65,121 @@ git clone https://github.com/EnigmaCurry/archiso-wireguard.git
 cd archiso-wireguard
 ```
 
-### 2. Create the secret templates
+### 2. Build the image
 
 ```
-just config
+just build-usb
 ```
 
-This creates a git-ignored `secrets/` directory with commented-out
-templates. It never overwrites files that already exist, so it is safe
-to run again.
+This builds one image that boots **x86_64 PCs (UEFI)** and the
+**Raspberry Pi 5**, into
+`out/arch-usb-<date>-x86_64+rpi5.img` (about 2.7 GB). The first build
+pulls the `archlinux` image and downloads about 1 GB of packages; later
+builds reuse a package cache and take a few minutes.
+
+There is nothing to configure yet: the build takes no input and the
+result is the same for everybody. `just build` (x86_64 ISO only) and
+`just build-rpi5` (Pi only) build the other two targets.
+
+### 3. Write it to a USB stick
+
+Find the device with `lsblk`, then (this erases the stick):
 
 ```
-secrets/
-  wireguard/wg0.conf          # WireGuard config (optional)
-  ssh/authorized_keys         # SSH public keys allowed in as root (required)
-  wifi/EXAMPLE.psk.example    # WiFi network template (optional)
-  webhook.env                 # boot webhook URL (optional)
+sudo dd if=out/arch-usb-<date>-x86_64+rpi5.img \
+  of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
-Fill them in as described in the next steps.
+### 4. Configure the stick
 
-### 3. WireGuard (optional)
+Replug the stick. Its FAT32 partition (labelled `ARCH_CONFIG`) mounts on
+any computer and contains:
 
-To build without WireGuard, leave `secrets/wireguard/wg0.conf` empty
-or fully commented out and skip to step 4. The ISO then only has SSH
-on the LAN, and the webhook reports `WireGuard: not configured`.
+```
+archiso-config/
+  README.txt             what this directory is
+  ssh/authorized_keys    public keys allowed in as root (required)
+  wifi/<SSID>.psk        one file per WiFi network (optional)
+  wireguard/wg0.conf     WireGuard tunnel (optional)
+  webhook.env            boot webhook URL (optional)
+```
 
-Make a new key pair just for this ISO:
+Every file starts out as a commented-out template. Edit them in place
+with any editor, on any OS, and keep the stick for later edits: the live
+system reads them on **every** boot, so you can move the stick to a new
+WiFi network without rebuilding anything.
+
+What to put in each file is described in
+[Configuration](#configuration) below. Files you leave commented out are
+ignored and the feature is skipped.
+
+Instead of editing by hand, you can keep the files in the repo and copy
+them over:
+
+```
+just config                                  # create secrets/ templates
+$EDITOR secrets/...                          # fill them in
+just provision /run/media/you/ARCH_CONFIG    # copy them to the stick
+```
+
+`just provision` checks the files before copying (a `wg0.conf` without a
+`PersistentKeepalive`, an `authorized_keys` with no key) so a typo fails
+here instead of leaving a headless machine unreachable. Its argument may
+be a mounted config partition, a `/dev/sdX` device, or an image in
+`out/` you are about to write; with no argument it uses the newest image
+in `out/`.
+
+### 5. Boot and connect
+
+Boot the target machine from the stick. Plug in ethernet, or be in range
+of one of your WiFi networks. On the **first** boot the live system
+generates its SSH host keys and writes them back to
+`archiso-config/ssh/host/` on the stick, so every later boot presents
+the same fingerprint.
+
+Once the webhook arrives (or after a minute or two), SSH in over the
+VPN:
+
+```
+ssh root@10.0.0.2
+```
+
+Without WireGuard, SSH to the LAN address from the webhook (or from
+`ip addr` on the console) instead.
+
+To confirm the host key on first connect, compare with the fingerprint
+the live system printed on the console, or compute it from the stick:
+
+```
+ssh-keygen -lf /run/media/you/ARCH_CONFIG/archiso-config/ssh/host/ssh_host_ed25519_key.pub
+```
+
+From there, install Arch as usual (`archinstall`, or the
+[installation guide](https://wiki.archlinux.org/title/Installation_guide)).
+
+## Configuration
+
+These are the files in `archiso-config/` on the stick (or in `secrets/`
+in the repo, if you use `just provision`).
+
+### WireGuard (optional)
+
+Leave `wireguard/wg0.conf` empty or fully commented out to boot without
+WireGuard: the stick then only has SSH on the LAN, and the webhook
+reports `WireGuard: not configured`.
+
+Make a new key pair just for this stick:
 
 ```
 just keygen
 ```
 
-Edit `secrets/wireguard/wg0.conf` and uncomment and fill in the
-template:
+(or `wg genkey | tee /dev/stderr | wg pubkey` anywhere you have
+`wireguard-tools`). Then fill in the template:
 
 ```ini
 [Interface]
-PrivateKey = <the ISO's private key>
+PrivateKey = <this stick's private key>
 Address = 10.0.0.2/32
 
 [Peer]
@@ -107,45 +189,40 @@ AllowedIPs = 10.0.0.0/24
 PersistentKeepalive = 25
 ```
 
- * `PersistentKeepalive` is **required** (the build checks for it).
-   Without it, the ISO is unreachable behind NAT until it sends traffic
-   first, so you couldn't SSH in.
+ * `PersistentKeepalive` is **required** (`just provision` checks for
+   it). Without it, the stick is unreachable behind NAT until it sends
+   traffic first, so you couldn't SSH in.
  * `Endpoint` may be a DNS name; the tunnel keeps retrying until it
    resolves.
  * `DNS = ...` is supported if you want to resolve names through the
    VPN.
 
-Then add the ISO as a peer **on your WireGuard server**, using the ISO's
+Then add the stick as a peer **on your WireGuard server**, using its
 *public* key and the address you gave it:
 
 ```ini
 [Peer]
 # arch-iso
-PublicKey = <the ISO's public key>
+PublicKey = <the stick's public key>
 AllowedIPs = 10.0.0.2/32
 ```
 
-### 4. SSH
+### SSH
 
-Add the public key(s) you will log in with:
+Put the public key(s) you will log in with in `ssh/authorized_keys`, one
+per line. Without at least one, nobody can log in over SSH at all.
 
-```
-cat ~/.ssh/id_ed25519.pub >> secrets/ssh/authorized_keys
-```
+`ssh/host/` is created by the live system on its first boot and holds
+that stick's SSH host keys. Delete the directory to get new ones on the
+next boot.
 
-The SSH host keys are generated automatically into `secrets/ssh/host/`
-on the first build and reused after that.
+### WiFi (optional)
 
-### 5. WiFi (optional)
-
-Without any WiFi files, the ISO is wired-only. Add one file per network
-in iwd's format:
-
-```
-cp secrets/wifi/EXAMPLE.psk.example "secrets/wifi/My Network.psk"
-```
+Without any WiFi files, the stick is wired-only. Add one file per
+network in iwd's format, next to the `EXAMPLE.psk.example` template:
 
 ```ini
+# wifi/My Network.psk
 [Security]
 Passphrase=your wifi password
 ```
@@ -161,22 +238,23 @@ Passphrase=your wifi password
  * For hidden networks, add `[Settings]` with `Hidden=true`.
  * iwd doesn't support comments at the end of a line; put comments on
    their own lines.
+ * `.example` files are ignored.
 
 See `man 5 iwd.network` for everything else.
 
-### 6. Boot webhook (optional)
+### Boot webhook (optional)
 
-To get notified when the ISO boots, set a URL in `secrets/webhook.env`:
+To get notified when the stick boots, set a URL in `webhook.env`:
 
 ```
 WEBHOOK_URL=https://ntfy.sh/<a-long-random-topic>
 ```
 
 Once the network is up and WireGuard connects (or gives up after two
-minutes), the ISO POSTs a plain-text message like this:
+minutes), it POSTs a plain-text message like this:
 
 ```
-arch-iso is up (arch-iso-CONTAINS-SECRETS 2026.10.24)
+arch-iso is up (arch-iso 2026.10.24)
 LAN: 192.168.1.50/24 on enp1s0
 Public: 203.0.113.4
 WireGuard: 10.0.0.2/32 on wg0 (handshake 3s ago)
@@ -186,61 +264,46 @@ The message contains your IP addresses. On a public service like
 ntfy.sh, anyone who knows the topic name can read it, so use a long
 random topic or a server with access control.
 
-### 7. Build
+## How the configuration is loaded
 
-```
-just build
-```
+Early in boot, before iwd, `wg-quick@wg0`, sshd and the webhook,
+[`arch-iso-config`](airootfs/usr/local/bin/arch-iso-config) finds the
+config partition and copies `archiso-config/` into the running system's
+tmpfs, root-only:
 
-The first build pulls the `archlinux` image and downloads about 1 GB of
-packages; later builds reuse a package cache and take a few minutes.
-The ISO is written to
-`secrets/out/arch-iso-CONTAINS-SECRETS-<date>-x86_64.iso`.
+| on the stick | in the live system |
+|---|---|
+| `wifi/*.psk` | `/var/lib/iwd/` (0600) |
+| `wireguard/wg0.conf` | `/etc/wireguard/wg0.conf` (0600) |
+| `ssh/authorized_keys` | `/root/.ssh/authorized_keys` (0600) |
+| `webhook.env` | `/etc/arch-iso/webhook.env` (0600) |
+| `ssh/host/*` | `/etc/ssh/` (0600), generated and saved back on the first boot |
 
-The build refuses to start if a required secret is missing or still a
-template, and warns if there is no WireGuard config, WiFi network or
-webhook.
+It looks in two places, in this order:
 
-### 8. Check the ISO
+ 1. `/run/archiso/bootmnt/archiso-config`, when archiso left the
+    partition it booted from mounted.
+ 2. Any filesystem labelled **`ARCH_CONFIG`**, which it mounts and
+    unmounts again.
 
-```
-just inspect
-```
+The second one is the usual case. archiso boots with `copytoram=auto`:
+on a machine with enough RAM the live system is copied to RAM and the
+boot partition is unmounted in the initramfs, so by the time anything
+runs there is no `bootmnt` left. It is also the only way an **ISO** can
+be configured, since ISO 9660 can't be edited after `dd`: format a
+second USB stick FAT32 with that label and put `archiso-config/` on it
+(copy [`config-templates/`](config-templates) to start from).
 
-Lists the secrets and files this repo added to the ISO, with owner and
-mode (never contents), and fails if any secret is readable by anyone but
-root.
+The label is therefore load-bearing. Relabel a stick's partition and,
+on any machine that copies to RAM, the live system boots unconfigured.
 
-### 9. Write it to a USB stick
+Nothing is written back except the SSH host keys, and only once: the
+partition is remounted read-write just long enough to save them, then
+read-only again.
 
-Find the device with `lsblk`, then (this erases the stick):
-
-```
-sudo dd if=secrets/out/arch-iso-CONTAINS-SECRETS-<date>-x86_64.iso \
-  of=/dev/sdX bs=4M status=progress oflag=sync
-```
-
-### 10. Boot and connect
-
-Boot the target machine from the stick. Plug in ethernet, or be in
-range of one of your WiFi networks. Once the webhook arrives (or after a
-minute or two), SSH in over the VPN:
-
-```
-ssh root@10.0.0.2
-```
-
-Without WireGuard, SSH to the LAN address from the webhook (or from
-`ip addr` on the console) instead.
-
-To confirm the host key on first connect, compare with:
-
-```
-ssh-keygen -lf secrets/ssh/host/ssh_host_ed25519_key.pub
-```
-
-From there, install Arch as usual (`archinstall`, or the
-[installation guide](https://wiki.archlinux.org/title/Installation_guide)).
+A stick with no configuration at all still boots. It just has no WiFi,
+no VPN, no SSH login and no webhook, and says so on the console and in
+the journal.
 
 ## Raspberry Pi 5
 
@@ -250,9 +313,10 @@ for a USB stick or SD card. It is for installing to a Pi 5 whose NVMe
 drive you can't easily take out: boot the stick, SSH in over the VPN,
 and install to `/dev/nvme0n1` with `pacstrap`.
 
-It uses the same `secrets/` (WiFi, WireGuard key, SSH keys, webhook) as
-the x86_64 ISO, so both images are "the arch-iso installer" on your VPN
-and present the same host key. Don't boot both at once: they would fight
+It is configured exactly like the x86_64 image, from `archiso-config/`
+on its FAT32 partition. Two sticks made from the same configuration are
+both "the arch-iso installer" on your VPN, but each generates its own
+SSH host keys on first boot. Don't boot two at once: they would fight
 over the WireGuard peer address.
 
 Requirements: Podman and just, as above. It builds natively on an
@@ -268,7 +332,7 @@ podman machine init --cpus 4 --memory 3072
 podman machine start
 ```
 
-Then, after the bootstrap steps 2-6 above:
+Then:
 
 ```
 just build-rpi5
@@ -278,15 +342,13 @@ just inspect
 On an arm64 host, the first build downloads the Arch Linux ARM rootfs
 (about 830 MB), checks its signature, and imports it as the
 `localhost/archlinuxarm` Podman image for the build container. The
-image is written to
-`secrets/out/arch-rpi5-CONTAINS-SECRETS-<date>-aarch64.img` (the date is
-UTC). Write it to a USB stick or SD card (this erases it). On macOS, find the disk with
-`diskutil list`:
+image is written to `out/arch-rpi5-<date>-aarch64.img` (the date is
+UTC). Write it to a USB stick or SD card (this erases it). On macOS,
+find the disk with `diskutil list`:
 
 ```
 diskutil unmountDisk /dev/diskN
-sudo dd if=secrets/out/arch-rpi5-CONTAINS-SECRETS-<date>-aarch64.img \
-  of=/dev/rdiskN bs=4m
+sudo dd if=out/arch-rpi5-<date>-aarch64.img of=/dev/rdiskN bs=4m
 ```
 
 To boot the stick ahead of the NVMe, set the Pi's boot order (SD, then
@@ -313,7 +375,9 @@ What's different from the ISO:
    initramfs and `cmdline.txt` from the FAT32 partition, and archiso's
    initramfs finds `arch/aarch64/airootfs.sfs` next to them by the
    partition's volume ID. With enough RAM (the image size plus 2 GiB)
-   it is copied to RAM, so the stick can be pulled after boot.
+   it is copied to RAM, so the stick can be pulled after boot; the
+   configuration is read before that, by label (see
+   [How the configuration is loaded](#how-the-configuration-is-loaded)).
  * When installing, use the Pi kernel, not `linux`:
    `pacstrap -K /mnt base linux-rpi-16k firmware-raspberrypi ...`, with
    a FAT32 `/boot` partition and `root=PARTUUID=...` in
@@ -322,25 +386,19 @@ What's different from the ISO:
 ## One stick for both (x86_64 + Raspberry Pi 5)
 
 `just build-usb` builds one disk image that boots **x86_64 PCs (UEFI)**
-and the **Raspberry Pi 5**:
+and the **Raspberry Pi 5**. It builds the x86_64 ISO first
+(`out/arch-iso-*.iso`, kept), then the Pi image with the ISO's UEFI boot
+files and live system merged into its FAT32 partition, as
+`out/arch-usb-<date>-x86_64+rpi5.img`.
 
-```
-just build-usb
-just inspect
-```
-
-It builds the x86_64 ISO first (`secrets/out/arch-iso-*.iso`, kept),
-then the Pi image with the ISO's UEFI boot files and live system merged
-into its FAT32 partition, as
-`secrets/out/arch-usb-CONTAINS-SECRETS-<date>-x86_64+rpi5.img` (about
-2.7 GB). Write it to a stick the same way as the Pi image above.
-
-The two systems share the partition without colliding:
+The two systems and the configuration share the partition without
+colliding:
 
 ```
 config.txt cmdline.txt kernel8.img initramfs-linux.img *.dtb overlays/  # Pi 5 firmware
 EFI/BOOT/BOOTx64.EFI loader/ arch/boot/x86_64/                          # x86_64 UEFI (systemd-boot)
 arch/x86_64/airootfs.sfs  arch/aarch64/airootfs.sfs                     # the two live systems
+archiso-config/                                                         # your configuration
 boot/<uuid>.uuid                                                        # how each finds the stick
 ```
 
@@ -357,8 +415,8 @@ Limits:
    UEFI firmware is meant to boot from an EFI System Partition (type
    `0xef`), but almost all firmware also boots a FAT32 USB stick with
    `EFI/BOOT/BOOTx64.EFI`; a strict one may not.
- * Both systems are the same installer with the same secrets and SSH
-   host keys, as with the separate images.
+ * Both systems read the same `archiso-config/`, and so present the
+   same SSH host keys and the same WireGuard address.
 
 ## Building for the other architecture
 
@@ -389,37 +447,46 @@ containers; the packages above set it.
 
 | Command | Does |
 |---|---|
-| `just config` | Create missing secret files as commented-out templates |
-| `just keygen` | Generate a WireGuard key pair for the ISO (in a Podman container) |
-| `just build` | Build the ISO into `secrets/out/` (in a Podman container) |
-| `just build-rpi5` | Build the Raspberry Pi 5 image into `secrets/out/` (in a Podman container) |
-| `just build-usb` | Build one image for x86_64 (UEFI) and the Pi 5 into `secrets/out/` (builds the ISO first) |
-| `just inspect [IMAGE]` | Show secrets/overlay files in an ISO or `.img` and check permissions |
+| `just build` | Build the x86_64 ISO into `out/` (in a Podman container) |
+| `just build-rpi5` | Build the Raspberry Pi 5 image into `out/` (in a Podman container) |
+| `just build-usb` | Build one image for x86_64 (UEFI) and the Pi 5 into `out/` (builds the ISO first) |
+| `just config` | Create missing config files under `secrets/` as commented-out templates |
+| `just keygen` | Generate a WireGuard key pair for a stick (in a Podman container) |
+| `just provision [TARGET]` | Check `secrets/` and copy it onto a stick, device or image |
+| `just inspect [IMAGE]` | List an image's overlay files and check it contains no secrets |
 | `just clean` | Remove the cached pacman packages volumes |
 
-## If the ISO is lost
+## If a stick is lost
 
-Remove the ISO's `[Peer]` from your WireGuard server, and change the
-passwords of the WiFi networks it contained. Before building a
-replacement, generate a new WireGuard key (step 3), and delete
-`secrets/ssh/host/` to get new SSH host keys.
+Remove its `[Peer]` from your WireGuard server, and change the passwords
+of the WiFi networks it contained. The next stick should get a new
+WireGuard key (`just keygen`); its SSH host keys are new anyway, since
+they are generated per stick on first boot.
+
+The built image itself is generic and holds nothing worth protecting:
+`just inspect` fails if a secret ever ends up inside one, and tells you
+if the image's config partition has been filled in (which makes that
+image a secret too, so don't publish a provisioned one).
 
 ## How it works
 
 `build.sh` starts a throwaway `archlinux` container (rootless Podman,
-`--privileged`) with this repo bind-mounted, so secrets never end up in
-a container image. Inside, it copies archiso's stock `releng` profile,
-lays [`airootfs/`](airootfs) and the secrets on top, and runs `mkarchiso`.
-Every step, decision and problem along the way is recorded in
-[LOG.md](LOG.md).
+`--privileged`) with this repo bind-mounted. Inside, it copies archiso's
+stock `releng` profile, lays [`airootfs/`](airootfs) on top, and runs
+`mkarchiso`. No secret is involved at any point, so the build is
+reproducible by anyone and its output is safe to share. Every step,
+decision and problem along the way is recorded in [LOG.md](LOG.md).
 
 ```
-airootfs/        # files added to the live system
-build.sh         # build (host side starts the container)
-config.sh        # creates secret templates
-inspect.sh       # checks a built ISO or .img
-packages.extra   # packages added to releng's list
-packages.rpi5    # rpi5 changes to releng's packages.aarch64
-rpi5/airootfs/   # files added to the rpi5 live system only
-secrets/         # git-ignored: your secrets and built images
+airootfs/          # files added to the live system
+build.sh           # build (host side starts the container)
+config.sh          # creates secrets/ templates from config-templates/
+config-templates/  # the archiso-config/ skeleton put on every image
+inspect.sh         # checks a built ISO or .img
+packages.extra     # packages added to releng's list
+packages.rpi5      # rpi5 changes to releng's packages.aarch64
+provision.sh       # copies secrets/ onto a stick's config partition
+rpi5/airootfs/     # files added to the rpi5 live system only
+secrets/           # git-ignored: your configuration
+out/               # git-ignored: the built images
 ```

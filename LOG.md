@@ -4,6 +4,10 @@ A running log of everything done to build this repo, in order.
 
 ## Decisions so far
 
+(The first two were reversed later: see
+[Generic images](#generic-images-configuration-moves-to-the-stick-2026-10-24)
+at the end. Nothing is baked into an image anymore.)
+
  * Secrets are stored unencrypted in a git-ignored `secrets/` directory.
  * The built ISO contains secrets, so it is written into `secrets/` too.
  * The ISO boots non-interactively (no passphrase prompts); physical
@@ -678,3 +682,159 @@ stick, and **booted it on an x86_64 PC (UEFI) and on the Raspberry Pi
    doesn't rely on it; `build.sh` now passes `-h 2048` so the field is
    correct for any firmware that does. Built images with this change
    are not yet boot-tested.
+
+## Generic images: configuration moves to the stick (2026-10-24)
+
+Until now every secret was baked into the squashfs at build time, so
+each image was personal, could not be shared, and any change (a new
+WiFi network, a new key) meant a full rebuild. The FAT32 partition the
+usb and rpi5 images boot from is writable, and archiso leaves it
+mounted in the running system, so the secrets can live there instead.
+
+Decision: **no baked-in secrets at all**. The build takes no input and
+produces a generic image; the user fills in `archiso-config/` on the
+stick after writing it. `CONTAINS-SECRETS` is gone from the image
+names, and the output moved from `secrets/out/` to `out/`.
+
+### What the live system does
+
+`airootfs/usr/local/bin/arch-iso-config`, run by
+`arch-iso-config.service` (`Before=sysinit.target`, so ahead of iwd,
+`wg-quick@wg0`, `sshd`, `sshdgenkeys` and the webhook), copies the
+config into the tmpfs root with the modes the old `file_permissions`
+entries used to set:
+
+```
+wifi/*.psk          -> /var/lib/iwd/           700 dir, 600 files
+wireguard/wg0.conf  -> /etc/wireguard/         700 dir, 600 file
+ssh/authorized_keys -> /root/.ssh/             700 dir, 600 file
+webhook.env         -> /etc/arch-iso/          700 dir, 600 file
+ssh/host/*          -> /etc/ssh/               600 keys, 644 .pub
+```
+
+Where it reads from:
+
+ * `/run/archiso/bootmnt/archiso-config` when it exists. archiso's
+   initcpio hook mounts the boot device there read-only
+   (`_mnt_dev "${archisodevice}" "/run/archiso/bootmnt" "-r"`,
+   `/usr/lib/initcpio/hooks/archiso:270` in mkinitcpio-archiso) and
+   `/run` survives `switch_root`, so it is still there in the live
+   system.
+ * Otherwise any filesystem labelled `ARCH_CONFIG`, mounted (rw if
+   possible, `umask=0077`) and unmounted again. The usb/rpi5 FAT label
+   changed from `ARCH_RPI5` to `ARCH_CONFIG` for this.
+
+The fallback turned out to be the **normal** path, not the edge case.
+Booting the test image in QEMU with 4 GB of RAM, the loader reported
+`Configuration: /run/arch-iso/config/archiso-config`, and `findmnt` in
+the live system showed no `/run/archiso/bootmnt` at all, but a
+`/run/archiso/copytoram` tmpfs: releng boots `copytoram=auto`, so a
+machine with enough RAM copies the live system to RAM and the hook
+unmounts the boot partition before `switch_root`
+(`/usr/lib/initcpio/hooks/archiso:378`). `bootmnt` only survives on a
+machine too small for that, or with `copytoram=n`. Both paths are
+exercised below. The practical consequence: **the `ARCH_CONFIG` label
+is load-bearing** on every target, not just the ISO, and relabelling a
+stick makes it boot unconfigured.
+
+Missing or fully commented-out files are not errors: the feature is
+skipped and boot continues. `wg-quick@wg0` is now always enabled, with
+a `ConditionPathExists=/etc/wireguard/wg0.conf` drop-in instead of the
+build deleting its enable symlink.
+
+### SSH host keys
+
+The one piece that can't ship in a generic image: a shared private host
+key would let anyone with the image MITM anyone else's machine. They
+are generated on the first boot and written back to
+`archiso-config/ssh/host/` on the stick, so the fingerprint is stable
+from the second boot on. The partition is mounted read-only, so the
+save remounts it rw, copies, `sync`s and remounts ro. On read-only
+media the save fails with a warning and the keys are ephemeral. The
+fingerprints are printed to the journal/console on every boot.
+
+### Host side
+
+ * `config-templates/` is now the single source of the templates:
+   `config.sh` copies the missing ones into `secrets/`, and `build.sh`
+   copies the whole tree onto the image's FAT partition as
+   `archiso-config/`, so a freshly written stick is self-documenting
+   (it includes a `README.txt`).
+ * `provision.sh` (`just provision`) does what `check_secrets` used to:
+   it validates `secrets/` (`[Interface]`/`PrivateKey`,
+   `PersistentKeepalive`, a non-comment `authorized_keys`, warnings for
+   no WiFi/webhook) and then copies it onto a mounted config partition
+   (plain `cp`), or into an image file or device node with `mtools` in
+   a container (`sfdisk -J` for the partition offset, `@@<bytes>` for
+   mtools). Validation had to move somewhere: the target is headless,
+   and a typo that used to fail the build would otherwise only show up
+   as a machine that never appears.
+ * `inspect.sh` flipped: it used to require that the baked-in secrets
+   were root-only, and now requires that **no** file exists under
+   `/etc/wireguard`, `/var/lib/iwd`, `/root/.ssh`, `/etc/arch-iso` or
+   `/etc/ssh/ssh_host_*_key` in the squashfs. For an `.img` it also
+   lists `archiso-config/` and, by counting non-comment lines with
+   `mtype` (never printing contents), says whether the image is still
+   generic or has been provisioned and must not be published.
+
+### Trade-offs accepted
+
+ * The config partition is plain text and world-readable on any machine
+   it is plugged into, where before the secrets were inside a squashfs.
+   The security boundary was already physical possession of the stick;
+   it is just more visible now. FAT has no ownership, so the modes are
+   applied on copy into the tmpfs instead.
+ * The plain ISO (`just build`) can no longer carry its own
+   configuration at all: ISO 9660 is read-only, so it needs a second
+   `ARCH_CONFIG` filesystem. `just build-usb` is the recommended path.
+ * A stick provisioned by `provision.sh` before `dd` is no longer a
+   generic image; `just inspect` says so.
+
+### Verification (x86_64 host)
+
+Containers:
+
+ * The loader was exercised in an `archlinux` container with
+   `BOOTMNT=` pointed at a provisioned directory: first boot installs
+   everything and saves three host keys; second boot reports the same
+   three fingerprints; a read-only mount without saved keys warns and
+   continues (`exit=0`); no config at all warns and continues.
+ * `provision.sh` was run against a synthetic MBR+FAT32 image built the
+   same way `build.sh` builds one, and against a directory. Both wrote
+   `archiso-config/` with an SSID containing a space, overwriting the
+   shipped templates and leaving `.example` files alone.
+ * `inspect.sh` flagged the provisioned test image as "already
+   configured and carries secrets".
+
+`just build` (x86_64 ISO), 1.6 GB, `IMAGE_ID=arch-iso`, no
+`CONTAINS-SECRETS`. `just inspect`: PASS, no secrets in the image, and
+the overlay lists `arch-iso-config`, its `sysinit.target.wants` link
+and the `wg-quick@wg0.service.d` drop-in.
+
+Booted in QEMU (KVM, `-kernel`/`-initrd` from the ISO, the ISO's
+`archisosearchuuid`), four boots:
+
+ 1. **ISO + a second disk labelled `ARCH_CONFIG`** (the ISO story).
+    Config found at 6.9 s via the label; WiFi, WireGuard,
+    `authorized_keys` and webhook installed; host keys generated and
+    saved to the second disk; `sshd` listening with them. `wg-quick`
+    failed only because the test `Endpoint` (`vpn.example.com`) does
+    not resolve in the VM.
+ 2. **Same disk, second boot, with `wg0.conf` reset to the template.**
+    "host keys loaded from the config partition" with the same three
+    fingerprints, and
+    `wg-quick@wg0.service skipped, unmet condition check ConditionPathExists=/etc/wireguard/wg0.conf`
+    — the drop-in works.
+ 3. **A FAT32 USB-style image** (the ISO tree + `archiso-config/` on
+    one FAT32 partition, exactly what the `usb` target builds). This
+    is the boot that revealed `copytoram=auto`: the loader used the
+    label fallback, and `findmnt` in the live system showed no
+    `bootmnt`.
+ 4. **The same image with `copytoram=n`.** Config found at
+    `/run/archiso/bootmnt/archiso-config`, host keys generated and
+    written back by remounting the live boot partition read-write
+    while `airootfs.sfs` was loop-mounted from it — no corruption,
+    the files read back fine afterwards.
+
+Not yet tested: the `rpi5` and `usb` images themselves (cross build),
+and real hardware.

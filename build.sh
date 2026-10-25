@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Build the arch-iso live image with secrets baked in.
+# Build the arch-iso live image. The image is generic: it holds no
+# secrets, and is configured after it is written to a USB stick, from an
+# archiso-config/ directory on the stick's FAT32 partition (see
+# provision.sh and airootfs/usr/local/bin/arch-iso-config).
 #
 # Usage: build.sh [TARGET]
 #   x86_64  (default) a live ISO for x86_64 PCs
@@ -9,12 +12,11 @@
 #           image with the ISO's UEFI boot files and airootfs merged into
 #           its FAT32 partition.
 #
-# On the host, this checks the secrets and re-runs itself inside an Arch
-# Linux container with Podman, with the repo bind-mounted at /build.
-# Inside the container, it installs archiso, copies the stock releng
-# profile, lays this repo's airootfs/ overlay and the git-ignored secrets/
-# on top, and runs mkarchiso. The image contains secrets and is written to
-# secrets/out/.
+# On the host, this re-runs itself inside an Arch Linux container with
+# Podman, with the repo bind-mounted at /build. Inside the container, it
+# installs archiso, copies the stock releng profile, lays this repo's
+# airootfs/ overlay on top, and runs mkarchiso. The image is written to
+# out/.
 #
 # The container always matches the host's architecture: Arch Linux on
 # amd64, Arch Linux ARM (imported from its rootfs tarball) on arm64, e.g.
@@ -30,9 +32,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RELENG=/usr/share/archiso/configs/releng
-SECRETS="${ROOT}/secrets"
-OUT="${SECRETS}/out"
-SSH_HOST_KEY_TYPES=(ed25519 ecdsa rsa)
+OUT="${ROOT}/out"
+# Configuration templates copied onto the image's FAT partition, for the
+# user to fill in after writing the stick.
+TEMPLATES="${ROOT}/config-templates"
+CONFIG_DIR=archiso-config
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -54,8 +58,10 @@ ALARM_SIGNING_KEY=68B3537F39A313B3E574D06777193F152BDBE6A6
 # ALARM doesn't package archiso; Arch's is arch "any" and this redirects
 # to its current version on a mirror.
 ARCHISO_PKG_URL=https://archlinux.org/packages/extra/any/archiso/download/
-# FAT volume label of the rpi5 boot partition.
-RPI5_LABEL=ARCH_RPI5
+# FAT volume label of the boot partition. The live system falls back to
+# searching for this label when it did not boot from the partition
+# holding archiso-config/ (an ISO, or a copytoram boot).
+FAT_LABEL=ARCH_CONFIG
 # Arch Linux mirror for x86_64 packages when building on arm64.
 ARCH_MIRROR='https://geo.mirror.pkgbuild.com/$repo/os/$arch'
 
@@ -88,55 +94,6 @@ cross_build() {
     [[ $(uname -m) != "${TARGET_ARCH}" ]]
 }
 
-# iwd network files in secrets/wifi/ (other files, like templates, are ignored)
-wifi_networks() {
-    find "${SECRETS}/wifi" -maxdepth 1 -type f \
-        \( -name '*.psk' -o -name '*.open' -o -name '*.8021x' \) 2>/dev/null
-}
-
-# True if secrets/wireguard/wg0.conf has anything besides comments and
-# blank lines. A missing, empty or fully commented-out config builds an
-# ISO without WireGuard.
-wireguard_enabled() {
-    grep -qvE '^\s*(#|$)' "${SECRETS}/wireguard/wg0.conf" 2>/dev/null
-}
-
-check_secrets() {
-    local wg=${SECRETS}/wireguard/wg0.conf
-    if wireguard_enabled; then
-        grep -qE '^\s*\[Interface\]' "${wg}" && grep -qiE '^\s*PrivateKey\s*=' "${wg}" \
-            || die "secrets/wireguard/wg0.conf is not filled in (no [Interface] PrivateKey)"
-        # Without a keepalive, the peer cannot reach us through NAT until we
-        # send traffic first, so SSH in over the VPN would not work.
-        grep -qiE '^\s*PersistentKeepalive\s*=' "${wg}" \
-            || die "secrets/wireguard/wg0.conf has no PersistentKeepalive (add e.g. PersistentKeepalive = 25 to [Peer])"
-    else
-        echo "WARNING: secrets/wireguard/wg0.conf is missing, empty or commented out (no WireGuard)" >&2
-    fi
-    [[ -f ${SECRETS}/ssh/authorized_keys ]] || die "missing secrets/ssh/authorized_keys (run: just config)"
-    grep -qvE '^\s*(#|$)' "${SECRETS}/ssh/authorized_keys" \
-        || die "secrets/ssh/authorized_keys has no keys (only comments)"
-    [[ -n $(wifi_networks) ]] \
-        || echo "WARNING: no WiFi networks in secrets/wifi/ (wired only)" >&2
-    webhook_enabled \
-        || echo "WARNING: no WEBHOOK_URL in secrets/webhook.env (webhook disabled)" >&2
-    chmod 700 "${SECRETS}"
-}
-
-# Generate a stable set of SSH host keys once, so the fingerprint never
-# changes between builds.
-ensure_host_keys() {
-    local type key
-    mkdir -p "${SECRETS}/ssh/host"
-    for type in "${SSH_HOST_KEY_TYPES[@]}"; do
-        key="${SECRETS}/ssh/host/ssh_host_${type}_key"
-        if [[ ! -f ${key} ]]; then
-            echo "Generating SSH host key: ${key}"
-            ssh-keygen -q -t "${type}" -N '' -C root@arch-iso -f "${key}"
-        fi
-    done
-}
-
 # Assemble the profile: releng + our overlay + packages.
 stage_profile() {
     mkdir -p "${PROFILE}" "${OUT}"
@@ -158,11 +115,11 @@ stage_profile() {
     cat >>"${PROFILE}/profiledef.sh" <<'EOF'
 
 # --- archiso-wireguard ---
-# The ISO contains secrets: make that obvious in its filename.
-iso_name="arch-iso-CONTAINS-SECRETS"
+iso_name="arch-iso"
 # mkarchiso defaults to the build host's architecture.
 arch="x86_64"
 file_permissions["/usr/local/bin/arch-iso-webhook"]="0:0:755"
+file_permissions["/usr/local/bin/arch-iso-config"]="0:0:755"
 EOF
 }
 
@@ -205,12 +162,12 @@ stage_profile_rpi5() {
     cat >>"${PROFILE}/profiledef.sh" <<'EOF'
 
 # --- archiso-wireguard ---
-# The image contains secrets: make that obvious in its filename.
-iso_name="arch-rpi5-CONTAINS-SECRETS"
+iso_name="arch-rpi5"
 arch="aarch64"
 # The Pi firmware boots the FAT partition directly: no boot loader.
 bootmodes=()
 file_permissions["/usr/local/bin/arch-iso-webhook"]="0:0:755"
+file_permissions["/usr/local/bin/arch-iso-config"]="0:0:755"
 EOF
 }
 
@@ -222,65 +179,10 @@ cross_cache_dir() {
     sed -i "/^\[options\]/a CacheDir = /var/cache/pacman/pkg/${TARGET_ARCH}" "${PROFILE}/pacman.conf"
 }
 
-# True if secrets/webhook.env sets WEBHOOK_URL (not just the template).
-webhook_enabled() {
-    grep -qE '^\s*WEBHOOK_URL=.+' "${SECRETS}/webhook.env" 2>/dev/null
-}
-
-# Copy a secret into the airootfs and register its permissions. mkarchiso
-# does not preserve modes, so every secret needs a file_permissions entry.
-install_secret() {
-    local src=$1 dest=$2 mode=$3
-    install -D -m 600 "${src}" "${PROFILE}/airootfs${dest}"
-    printf 'file_permissions["%s"]="0:0:%s"\n' "${dest}" "${mode}" >>"${PROFILE}/profiledef.sh"
-}
-
-secret_dir() {
-    # mkarchiso aborts on a file_permissions entry for a missing path.
-    mkdir -p "${PROFILE}/airootfs$1"
-    printf 'file_permissions["%s"]="0:0:%s"\n' "$1" "$2" >>"${PROFILE}/profiledef.sh"
-}
-
-stage_secrets() {
-    local f type
-
-    # WiFi: iwd network files (<SSID>.psk, .open, .8021x)
-    secret_dir /var/lib/iwd 700
-    while IFS= read -r f; do
-        install_secret "${f}" "/var/lib/iwd/$(basename "${f}")" 600
-    done < <(wifi_networks)
-
-    # WireGuard, or drop the overlay's wg-quick@wg0 enable link without it
-    if wireguard_enabled; then
-        secret_dir /etc/wireguard 700
-        install_secret "${SECRETS}/wireguard/wg0.conf" /etc/wireguard/wg0.conf 600
-    else
-        rm "${PROFILE}/airootfs/etc/systemd/system/multi-user.target.wants/wg-quick@wg0.service"
-    fi
-
-    # SSH client keys allowed to log in as root
-    secret_dir /root/.ssh 700
-    install_secret "${SECRETS}/ssh/authorized_keys" /root/.ssh/authorized_keys 600
-
-    # SSH host keys
-    for type in "${SSH_HOST_KEY_TYPES[@]}"; do
-        install_secret "${SECRETS}/ssh/host/ssh_host_${type}_key" \
-            "/etc/ssh/ssh_host_${type}_key" 600
-        install_secret "${SECRETS}/ssh/host/ssh_host_${type}_key.pub" \
-            "/etc/ssh/ssh_host_${type}_key.pub" 644
-    done
-
-    # Boot webhook (arch-iso-webhook.service only runs if this exists)
-    if webhook_enabled; then
-        secret_dir /etc/arch-iso 700
-        install_secret "${SECRETS}/webhook.env" /etc/arch-iso/webhook.env 600
-    fi
-}
-
 # Host side: re-run this script in a throwaway Arch container. Rootless
 # Podman maps container root to the invoking user, so everything written
 # to the bind mount is owned by that user. --privileged is needed for
-# pacstrap's mounts. Secrets are only bind-mounted, never put in an image.
+# pacstrap's mounts.
 run_container() {
     local arch usb_iso=${1:-}
     command -v podman >/dev/null || die "podman is not installed"
@@ -367,9 +269,7 @@ build_iso() {
         pacman-key --lsign-key "${ALARM_SIGNING_KEY}"
     fi
     [[ -d ${RELENG} ]] || die "archiso is not installed (missing ${RELENG})"
-    ensure_host_keys
     stage_profile
-    stage_secrets
     setup_builder
     if pi_target; then
         runuser -u builder -- mkarchiso -v -m netboot -w "${WORK}" -o "${BUILD}/out" "${PROFILE}"
@@ -377,7 +277,7 @@ build_iso() {
         return
     fi
     runuser -u builder -- mkarchiso -v -w "${WORK}" -o "${BUILD}/out" "${PROFILE}"
-    install -m 600 "${BUILD}"/out/*.iso "${OUT}/"
+    install -m 644 "${BUILD}"/out/*.iso "${OUT}/"
     echo
     echo "Built:"
     ls -lh "${OUT}"/*.iso
@@ -440,6 +340,11 @@ make_rpi5_image() {
             || die "${ARCHISO_WIREGUARD_USB_ISO} has no UEFI boot files or x86_64 airootfs"
     fi
 
+    # The configuration the user fills in after writing the stick. The
+    # live system reads it from here on every boot and writes the SSH
+    # host keys back on the first one.
+    cp -r "${TEMPLATES}" "${fat}/${CONFIG_DIR}"
+
     # The archiso hook finds the boot partition by its FAT volume ID,
     # unique per build (like the ISO's search UUID).
     volid=$(od -An -tx4 -N4 /dev/urandom | tr -d ' ' | tr a-f A-F)
@@ -455,7 +360,7 @@ make_rpi5_image() {
     # -h: the boot sector's "hidden sectors" must be the partition's start
     # sector (2048, below). mkfs.vfat -C on a plain file would write 0,
     # and boot firmware may use it to locate the filesystem.
-    mkfs.vfat -F 32 -h 2048 -n "${RPI5_LABEL}" -i "${volid}" -C "${fatimg}" "${kib}"
+    mkfs.vfat -F 32 -h 2048 -n "${FAT_LABEL}" -i "${volid}" -C "${fatimg}" "${kib}"
     MTOOLS_SKIP_CHECK=1 mcopy -s -i "${fatimg}" "${fat}"/* ::/
 
     # 1 MiB for the MBR, then the FAT32 (LBA) partition, marked bootable.
@@ -463,14 +368,13 @@ make_rpi5_image() {
     printf 'label: dos\nstart=2048, type=c, bootable\n' | sfdisk -q "${disk}"
     dd if="${fatimg}" of="${disk}" bs=1M seek=1 conv=notrunc status=none
 
-    install -m 600 "${disk}" "${OUT}/"
+    install -m 644 "${disk}" "${OUT}/"
     echo
     echo "Built:"
     ls -lh "${OUT}/${name}"
 }
 
 main() {
-    check_secrets
     if [[ -n ${ARCHISO_WIREGUARD_IN_CONTAINER:-} ]]; then
         build_iso
     elif [[ ${TARGET} == usb ]]; then
