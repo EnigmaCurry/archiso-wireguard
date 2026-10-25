@@ -277,6 +277,12 @@ build_iso() {
     if cross_build && pi_target; then
         # Trust Arch Linux ARM's package signing key (Arch Linux ARM's
         # container already has Arch's keyring for the other direction).
+        #
+        # --init first: the official archlinux image ships a populated
+        # public keyring but an empty private-keys-v1.d, and --lsign-key
+        # needs that local signing key ("There is no secret key
+        # available to sign with"). --init only adds what is missing.
+        pacman-key --init
         pacman-key --keyserver hkps://keyserver.ubuntu.com --recv-keys "${ALARM_SIGNING_KEY}"
         pacman-key --lsign-key "${ALARM_SIGNING_KEY}"
     fi

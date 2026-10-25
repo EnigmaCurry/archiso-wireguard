@@ -896,3 +896,53 @@ unconfigured `secrets/` ("authorized_keys has no keys").
 
 Still untested: the `rpi5` and `usb` images (no arm64 emulation on this
 host), and real hardware.
+
+## rpi5 and usb cross-built on an x86_64 host (2026-10-24)
+
+The combination LOG.md kept listing as untested -- a Pi image built on
+an amd64 host -- failed as soon as a host with aarch64 binfmt existed:
+
+```
+gpg: key 77193F152BDBE6A6: public key "Arch Linux ARM Build System ..." imported
+==> ERROR: There is no secret key available to sign with.
+==> Use 'pacman-key --init' to generate a default secret key.
+```
+
+`build_iso` only ran `pacman-key --init` on the aarch64 path, inside
+`install_archiso_alarm`. On amd64 it took the `else` branch (plain
+`pacman -Syu archiso openssh`) and then tried to locally sign the ALARM
+key. Checked in a bare container: the official `archlinux` image ships
+a populated **public** keyring but an empty
+`/etc/pacman.d/gnupg/private-keys-v1.d`, and `--lsign-key` needs that
+local signing key. `pacman-key --init` creates it and leaves the rest
+alone, after which `--lsign-key` succeeds. Fixed by calling `--init`
+first in the `cross_build && pi_target` branch.
+
+Not a regression from the generic-image work: the path had simply never
+run. It only became reachable once the dev host got
+`boot.binfmt.emulatedSystems = [ "aarch64-linux" ]` with
+`preferStaticEmulators = true` -- the latter is what sets the binfmt
+`F` flag (`flags: PF`), without which the emulator is looked up inside
+the container's mount namespace, where /nix/store does not exist.
+
+### Verification (amd64 host, aarch64 emulated)
+
+`just build-usb` then succeeded: the x86_64 ISO built natively, staged
+in `out/.iso-stage/`, merged into the aarch64 image and the stage
+removed, leaving only `out/arch-usb-2026.10.25-x86_64+rpi5.img`
+(2.5 GB). `just inspect`:
+
+ * Both live systems PASS with no secrets -- `arch/x86_64` (`arch-iso`)
+   and `arch/aarch64` (`arch-rpi5`) -- each with `arch-iso-config`, its
+   `sysinit.target.wants` link and the `wg-quick@wg0.service.d`
+   drop-in.
+ * One FAT32 partition holds the Pi firmware files, the x86_64 UEFI
+   boot files, both airootfs and `archiso-config/`.
+ * "The config partition holds only the templates: the image is
+   generic."
+
+mkinitcpio printed the usual harmless `phram` / `memdiskfind` errors
+from releng's memdisk hook.
+
+Still untested: booting the usb image on real hardware (both halves),
+and the rpi5-only target on this host.
