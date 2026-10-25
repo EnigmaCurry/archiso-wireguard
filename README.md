@@ -14,7 +14,7 @@ means borrowing a monitor and keyboard, typing a WiFi passphrase into
 (or chaining jump hosts), and cleaning a stale entry out of
 `known_hosts`, every single time. BOOMSTICK does all of that for you:
 plug it in, power on, and `ssh arch-iso`. The blog post
-[BOOMSTICK](https://book.rymcg.tech/blog/linux/archlinux-boomstick/)
+[BOOMSTICK](https://book.rymcg.tech/blog/linux/boomstick/)
 walks through it start to finish.
 
 It is the stock Arch Linux installer (archiso's `releng` profile) plus:

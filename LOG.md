@@ -1052,9 +1052,10 @@ logo built around the Arch "A" were both combined marks, so:
    `boomstick-pacman-cache-arm64` (another re-download after this).
    The `BOOMSTICK_*` environment variables, the hostname `arch-iso`,
    the `ARCH_CONFIG` label and `archiso-config/` are unchanged.
- * The blog post link keeps its URL
-   (`book.rymcg.tech/blog/linux/archlinux-boomstick/`), which is on the
-   author's own site.
+ * The blog post (in the author's `org` repo) is renamed to "BOOMSTICK
+   (for Arch Linux)" at `book.rymcg.tech/blog/linux/boomstick/`, with
+   the old `/blog/linux/archlinux-boomstick/` URL kept as a Hugo alias
+   (redirect). The README links to the new URL.
  * The drawn `logo.svg` was then replaced by the author's `logo.webp`
    (512x512): a USB stick with a rocket plume, WiFi, terminal, VPN
    shield and mini-PC icons, again without the Arch, WireGuard or
