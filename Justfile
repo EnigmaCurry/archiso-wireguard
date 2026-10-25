@@ -11,7 +11,7 @@ keygen:
     podman run --rm docker.io/library/archlinux:latest sh -c \
       'pacman -Sy --noconfirm wireguard-tools >/dev/null && k=$(wg genkey) && echo "private: $k" && echo "public:  $(echo $k | wg pubkey)"'
 
-# Build the generic ISO into out/, inside a Podman container
+# Build the generic x86_64 (UEFI) USB image into out/, inside a Podman container
 build:
     ./build.sh x86_64
 
@@ -27,7 +27,7 @@ build-usb:
 provision *target:
     ./provision.sh {{target}}
 
-# List the overlay files in an ISO or .img and check that it contains no secrets
+# List the overlay files in an image and check that it contains no secrets
 inspect *image:
     ./inspect.sh {{image}}
 

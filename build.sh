@@ -5,12 +5,18 @@
 # provision.sh and airootfs/usr/local/bin/arch-iso-config).
 #
 # Usage: build.sh [TARGET]
-#   x86_64  (default) a live ISO for x86_64 PCs
+#   x86_64  (default) a USB disk image for x86_64 PCs (UEFI)
 #   rpi5    a USB/SD disk image for the Raspberry Pi 5 (Arch Linux ARM)
 #   usb     one USB disk image that boots both: x86_64 PCs (UEFI) and the
 #           Raspberry Pi 5. Builds the x86_64 ISO first, then the rpi5
 #           image with the ISO's UEFI boot files and airootfs merged into
 #           its FAT32 partition.
+#   iso     internal: the plain x86_64 ISO, staged for the usb target.
+#
+# Every target is one MBR disk image with a single FAT32 partition, so
+# the config partition can be edited after writing the stick. x86_64
+# boots UEFI only; legacy BIOS is not supported (it needs the ISO
+# itself, which cannot carry a config partition).
 #
 # On the host, this re-runs itself inside an Arch Linux container with
 # Podman, with the repo bind-mounted at /build. Inside the container, it
@@ -33,6 +39,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RELENG=/usr/share/archiso/configs/releng
 OUT="${ROOT}/out"
+# The usb target needs the x86_64 ISO in the repo, where the second
+# container can see it. It is deleted once the image is built.
+STAGE="${OUT}/.iso-stage"
 # Configuration templates copied onto the image's FAT partition, for the
 # user to fill in after writing the stick.
 TEMPLATES="${ROOT}/config-templates"
@@ -42,7 +51,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 TARGET=${1:-x86_64}
 case ${TARGET} in
-    x86_64) TARGET_ARCH=x86_64 TARGET_PODMAN_ARCH=amd64 ;;
+    x86_64 | iso) TARGET_ARCH=x86_64 TARGET_PODMAN_ARCH=amd64 ;;
     rpi5 | usb) TARGET_ARCH=aarch64 TARGET_PODMAN_ARCH=arm64 ;;
     *) die "unknown target '${TARGET}' (x86_64, rpi5 or usb)" ;;
 esac
@@ -205,13 +214,16 @@ run_container() {
 }
 
 # Host side, usb: build the x86_64 ISO (in its own container), then the
-# rpi5 image with that ISO merged in.
+# rpi5 image with that ISO merged in. The ISO is only an intermediate,
+# so it is staged inside out/ and removed afterwards.
 run_usb() {
     local iso
-    "${ROOT}/build.sh" x86_64
-    iso=$(ls -t "${OUT}"/*.iso | head -1)
+    rm -rf "${STAGE}"
+    "${ROOT}/build.sh" iso
+    iso=$(ls -t "${STAGE}"/*.iso | head -1)
     echo "Merging into the USB image: ${iso#"${ROOT}"/}"
     run_container "${iso#"${ROOT}"/}"
+    rm -rf "${STAGE}"
 }
 
 # Host side, arm64: create the Arch Linux ARM container image from the
@@ -273,14 +285,18 @@ build_iso() {
     setup_builder
     if pi_target; then
         runuser -u builder -- mkarchiso -v -m netboot -w "${WORK}" -o "${BUILD}/out" "${PROFILE}"
-        make_rpi5_image
+        make_disk_image
         return
     fi
     runuser -u builder -- mkarchiso -v -w "${WORK}" -o "${BUILD}/out" "${PROFILE}"
-    install -m 644 "${BUILD}"/out/*.iso "${OUT}/"
-    echo
-    echo "Built:"
-    ls -lh "${OUT}"/*.iso
+    if [[ ${TARGET} == iso ]]; then
+        # Only an intermediate for the usb target, never shipped: an ISO
+        # 9660 filesystem cannot hold a config partition.
+        mkdir -p "${STAGE}"
+        install -m 644 "${BUILD}"/out/*.iso "${STAGE}/"
+        return
+    fi
+    make_disk_image
 }
 
 # Container side, arm64: the imported rootfs has no pacman keyring yet.
@@ -296,48 +312,64 @@ install_archiso_alarm() {
     userdel --remove alarm
 }
 
-# Container side, rpi5: pack the Pi's /boot (firmware config, kernel,
-# DTBs and the archiso initramfs) and the netboot airootfs into one FAT32
-# partition of an MBR disk image, without loop devices: the filesystem is
-# built in a file with mkfs.vfat and mtools, then placed after the
-# partition table.
+# Container side: pack the live system into an MBR disk image with one
+# FAT32 partition, without loop devices: the filesystem is built in a
+# file with mkfs.vfat and mtools, then placed after the partition table.
+# Every target produces one of these, so the config partition can be
+# edited after the image is written to a stick.
 #
-# For usb, the x86_64 ISO's UEFI boot files (systemd-boot in EFI/BOOT/,
-# loader/, its kernel and initramfs in arch/boot/x86_64/) and
-# arch/x86_64/airootfs.sfs go on the same partition. Nothing collides:
-# the Pi firmware only reads the top-level files, UEFI only EFI/ and
-# loader/, and each initramfs loads arch/$(uname -m)/. The ISO's
-# initramfs can't find the partition by its ISO volume UUID, so it falls
-# back to searching for its /boot/<uuid>.uuid file (archiso's support
-# for copying an ISO onto a FAT32 stick).
-make_rpi5_image() {
-    local fat=${BUILD}/fat fatimg=${BUILD}/fat.img disk volid uuid name kib
+# rpi5 puts the Pi's /boot (firmware config, kernel, DTBs and the archiso
+# initramfs) and the netboot airootfs on it. x86_64 puts the ISO's UEFI
+# boot files (systemd-boot in EFI/BOOT/, loader/, its kernel and
+# initramfs in arch/boot/x86_64/) and arch/x86_64/airootfs.sfs on it,
+# leaving out the ISO 9660-only boot files: syslinux (legacy BIOS, not
+# supported) and GRUB's loopback config. usb puts both on one partition.
+#
+# Nothing collides: the Pi firmware only reads the top-level files, UEFI
+# only EFI/ and loader/, and each initramfs loads arch/$(uname -m)/. The
+# ISO's initramfs can't find the partition by its ISO volume UUID, so it
+# falls back to searching for its /boot/<uuid>.uuid file (archiso's
+# support for copying an ISO onto a FAT32 stick), which comes along with
+# the rest of the ISO.
+make_disk_image() {
+    local fat=${BUILD}/fat fatimg=${BUILD}/fat.img disk volid uuid name kib iso suffix
+    case ${TARGET} in
+        x86_64) suffix=x86_64 ;;
+        rpi5) suffix=aarch64 ;;
+        usb) suffix=x86_64+rpi5 ;;
+        *) die "make_disk_image: unexpected target ${TARGET}" ;;
+    esac
     # shellcheck disable=SC2034,SC2154 # set and used by profiledef.sh
     name=$(declare -A file_permissions && source "${PROFILE}/profiledef.sh" \
-        && echo "${iso_name}-${iso_version}-aarch64.img")
-    if [[ ${TARGET} == usb ]]; then
-        name=${name/arch-rpi5-/arch-usb-}
-        name=${name/-aarch64.img/-x86_64+rpi5.img}
-    fi
+        && echo "${iso_name}-${iso_version}-${suffix}.img")
+    # usb builds on the rpi5 profile, but it is not a Pi-only image.
+    [[ ${TARGET} == usb ]] && name=${name/arch-rpi5-/arch-usb-}
     disk=${BUILD}/${name}
 
     mkdir -p "${fat}"
-    # mkarchiso's copy of the airootfs /boot. vmlinuz-* only exists for
-    # mkarchiso (see rpi5/airootfs/etc/pacman.d/hooks/); the firmware
-    # loads kernel8.img.
-    cp -r "${WORK}/aarch64/boot/." "${fat}/"
-    rm -f "${fat}"/vmlinuz-*
-    # airootfs.sfs and its checksum, without netboot's kernel copies.
-    mkdir -p "${fat}/arch"
-    cp -r "${BUILD}/out/arch/." "${fat}/arch/"
-    rm -rf "${fat}/arch/boot"
-    if [[ ${TARGET} == usb ]]; then
-        # Everything but the ISO 9660-only boot files: syslinux (BIOS boot
-        # from the ISO's El Torito image) and GRUB's ISO loopback config.
-        bsdtar -xf "/build/${ARCHISO_WIREGUARD_USB_ISO}" -C "${fat}" \
+    if pi_target; then
+        # mkarchiso's copy of the airootfs /boot. vmlinuz-* only exists for
+        # mkarchiso (see rpi5/airootfs/etc/pacman.d/hooks/); the firmware
+        # loads kernel8.img.
+        cp -r "${WORK}/aarch64/boot/." "${fat}/"
+        rm -f "${fat}"/vmlinuz-*
+        # airootfs.sfs and its checksum, without netboot's kernel copies.
+        mkdir -p "${fat}/arch"
+        cp -r "${BUILD}/out/arch/." "${fat}/arch/"
+        rm -rf "${fat}/arch/boot"
+    fi
+    if [[ ${TARGET} != rpi5 ]]; then
+        # x86_64 built its ISO in this container; usb got one from the
+        # host, built in a container of its own.
+        if [[ ${TARGET} == usb ]]; then
+            iso="/build/${ARCHISO_WIREGUARD_USB_ISO}"
+        else
+            iso=$(ls -t "${BUILD}"/out/*.iso | head -1)
+        fi
+        bsdtar -xf "${iso}" -C "${fat}" \
             --exclude 'boot/syslinux' --exclude 'boot/grub' --exclude 'arch/grubenv'
         [[ -f ${fat}/EFI/BOOT/BOOTx64.EFI && -d ${fat}/arch/x86_64 ]] \
-            || die "${ARCHISO_WIREGUARD_USB_ISO} has no UEFI boot files or x86_64 airootfs"
+            || die "$(basename "${iso}") has no UEFI boot files or x86_64 airootfs"
     fi
 
     # The configuration the user fills in after writing the stick. The
@@ -345,14 +377,18 @@ make_rpi5_image() {
     # host keys back on the first one.
     cp -r "${TEMPLATES}" "${fat}/${CONFIG_DIR}"
 
-    # The archiso hook finds the boot partition by its FAT volume ID,
-    # unique per build (like the ISO's search UUID).
+    # The FAT volume ID, unique per build. The Pi has no boot loader, so
+    # its kernel command line goes in cmdline.txt and points the archiso
+    # hook at a search file named after that ID. x86_64 needs neither:
+    # systemd-boot's loader entry already carries the ISO's search UUID.
     volid=$(od -An -tx4 -N4 /dev/urandom | tr -d ' ' | tr a-f A-F)
-    uuid=${volid:0:4}-${volid:4:4}
-    mkdir -p "${fat}/boot"
-    touch "${fat}/boot/${uuid}.uuid"
-    echo "archisobasedir=arch archisosearchuuid=${uuid} console=serial0,115200 console=tty1" \
-        >"${fat}/cmdline.txt"
+    if pi_target; then
+        uuid=${volid:0:4}-${volid:4:4}
+        mkdir -p "${fat}/boot"
+        touch "${fat}/boot/${uuid}.uuid"
+        echo "archisobasedir=arch archisosearchuuid=${uuid} console=serial0,115200 console=tty1" \
+            >"${fat}/cmdline.txt"
+    fi
 
     # Room for the files plus FAT overhead and slack.
     kib=$(( $(du -sk "${fat}" | cut -f1) * 105 / 100 + 64 * 1024 ))

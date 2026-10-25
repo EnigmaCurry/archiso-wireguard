@@ -78,8 +78,20 @@ pulls the `archlinux` image and downloads about 1 GB of packages; later
 builds reuse a package cache and take a few minutes.
 
 There is nothing to configure yet: the build takes no input and the
-result is the same for everybody. `just build` (x86_64 ISO only) and
-`just build-rpi5` (Pi only) build the other two targets.
+result is the same for everybody.
+
+`just build` (x86_64 PCs only) and `just build-rpi5` (Pi only) build the
+other two targets. All three are the same kind of thing — one MBR disk
+image with a single FAT32 partition holding the live system and the
+config partition — so pick whichever matches the machines you have.
+Only the hybrid needs both architectures, and so an emulator on
+whichever one the host isn't (see
+[Building for the other architecture](#building-for-the-other-architecture));
+the single-architecture targets build natively.
+
+x86_64 boots **UEFI only**. Legacy BIOS is not supported: it would have
+to be the ISO itself, and an ISO 9660 filesystem can't carry a config
+partition.
 
 ### 3. Write it to a USB stick
 
@@ -289,13 +301,15 @@ It looks in two places, in this order:
 The second one is the usual case. archiso boots with `copytoram=auto`:
 on a machine with enough RAM the live system is copied to RAM and the
 boot partition is unmounted in the initramfs, so by the time anything
-runs there is no `bootmnt` left. It is also the only way an **ISO** can
-be configured, since ISO 9660 can't be edited after `dd`: format a
-second USB stick FAT32 with that label and put `archiso-config/` on it
-(copy [`config-templates/`](config-templates) to start from).
+runs there is no `bootmnt` left.
 
 The label is therefore load-bearing. Relabel a stick's partition and,
 on any machine that copies to RAM, the live system boots unconfigured.
+It also means the configuration doesn't have to be on the stick you
+booted: a second USB stick formatted FAT32 and labelled `ARCH_CONFIG`
+with `archiso-config/` on it works too (copy
+[`config-templates/`](config-templates) to start from). Don't have two
+of them plugged in at once — the first one found wins.
 
 Nothing is written back except the SSH host keys, and only once: the
 partition is remounted read-write just long enough to save them, then
@@ -363,7 +377,7 @@ default `BOOT_ORDER=0xf461` (SD, NVMe, USB), a bootable NVMe always
 wins and the stick is never tried. You can also run
 `sudo rpi-eeprom-config --edit` from the OS on the NVMe.
 
-What's different from the ISO:
+What's different from the x86_64 image:
 
  * The package list is releng's `packages.aarch64` with the changes in
    [`packages.rpi5`](packages.rpi5): the Raspberry Pi Foundation kernel
@@ -386,10 +400,11 @@ What's different from the ISO:
 ## One stick for both (x86_64 + Raspberry Pi 5)
 
 `just build-usb` builds one disk image that boots **x86_64 PCs (UEFI)**
-and the **Raspberry Pi 5**. It builds the x86_64 ISO first
-(`out/arch-iso-*.iso`, kept), then the Pi image with the ISO's UEFI boot
-files and live system merged into its FAT32 partition, as
-`out/arch-usb-<date>-x86_64+rpi5.img`.
+and the **Raspberry Pi 5**, as `out/arch-usb-<date>-x86_64+rpi5.img`.
+It builds an x86_64 ISO first, then the Pi image with that ISO's UEFI
+boot files and live system merged into its FAT32 partition. The ISO is
+only an intermediate — that is where systemd-boot and the x86_64 kernel
+come from — and is deleted once the image is built.
 
 The two systems and the configuration share the partition without
 colliding:
@@ -409,8 +424,8 @@ archiso's support for copying an ISO onto a FAT32 stick.
 
 Limits:
 
- * x86_64 boots with **UEFI only**: no legacy BIOS boot (that needs the
-   ISO itself). Secure Boot must be off, as for the ISO.
+ * x86_64 boots with **UEFI only**, as for `just build`. Secure Boot
+   must be off.
  * The partition is FAT32 with MBR type `0x0c`, which the Pi requires.
    UEFI firmware is meant to boot from an EFI System Partition (type
    `0xef`), but almost all firmware also boots a FAT32 USB stick with
@@ -439,17 +454,21 @@ sudo pacman -S --needed qemu-user-static qemu-user-static-binfmt
 
 (Debian/Ubuntu and Fedora: `qemu-user-static`.) The build checks that
 it can run a target-architecture binary before it starts. The binfmt
-entry (`/proc/sys/fs/binfmt_misc/qemu-aarch64` for rpi5,
-`qemu-x86_64` for the ISO) needs the **F** flag, so it works inside
+entry (`/proc/sys/fs/binfmt_misc/qemu-aarch64` for rpi5, `qemu-x86_64`
+for the x86_64 half) needs the **F** flag, so it works inside
 containers; the packages above set it.
+
+`just build-usb` needs this on every host, since it builds both
+architectures. `just build` on x86_64 and `just build-rpi5` on arm64
+need nothing.
 
 ## Commands
 
 | Command | Does |
 |---|---|
-| `just build` | Build the x86_64 ISO into `out/` (in a Podman container) |
+| `just build` | Build the x86_64 (UEFI) USB image into `out/` (in a Podman container) |
 | `just build-rpi5` | Build the Raspberry Pi 5 image into `out/` (in a Podman container) |
-| `just build-usb` | Build one image for x86_64 (UEFI) and the Pi 5 into `out/` (builds the ISO first) |
+| `just build-usb` | Build one image for x86_64 (UEFI) and the Pi 5 into `out/` (needs both architectures) |
 | `just config` | Create missing config files under `secrets/` as commented-out templates |
 | `just keygen` | Generate a WireGuard key pair for a stick (in a Podman container) |
 | `just provision [TARGET]` | Check `secrets/` and copy it onto a stick, device or image |
@@ -482,7 +501,7 @@ airootfs/          # files added to the live system
 build.sh           # build (host side starts the container)
 config.sh          # creates secrets/ templates from config-templates/
 config-templates/  # the archiso-config/ skeleton put on every image
-inspect.sh         # checks a built ISO or .img
+inspect.sh         # checks a built image
 packages.extra     # packages added to releng's list
 packages.rpi5      # rpi5 changes to releng's packages.aarch64
 provision.sh       # copies secrets/ onto a stick's config partition

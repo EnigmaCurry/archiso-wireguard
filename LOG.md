@@ -838,3 +838,61 @@ Booted in QEMU (KVM, `-kernel`/`-initrd` from the ISO, the ISO's
 
 Not yet tested: the `rpi5` and `usb` images themselves (cross build),
 and real hardware.
+
+## Every target is a configurable disk image (2026-10-24)
+
+`just build` still produced a plain ISO, which after the previous
+change was the one deliverable that could not be configured: ISO 9660
+is read-only, so the stick had no `archiso-config/` and the live system
+came up with no keys, no WiFi and no VPN — the stock Arch installer.
+`just build-rpi5` was fine (its FAT32 partition always carried the
+config), but the ISO was not.
+
+Decision: **no BIOS support**, so the ISO stops being a deliverable.
+`just build` now produces an x86_64 UEFI disk image — the usb image
+minus the Pi half — and every target is one MBR disk image with a
+single FAT32 partition carrying the live system and `archiso-config/`.
+
+ * `make_rpi5_image` became `make_disk_image`, which assembles the FAT
+   from the Pi's `/boot` + netboot airootfs (rpi5), from an ISO's UEFI
+   boot files + `arch/x86_64/` (x86_64), or both (usb). `cmdline.txt`
+   and the `/boot/<uuid>.uuid` search file are only written for Pi
+   targets: on x86_64 systemd-boot's loader entry already carries the
+   ISO's search UUID, and the ISO's own `.uuid` file comes along with
+   the extraction.
+ * A new internal target, `build.sh iso`, builds the plain ISO into
+   `out/.iso-stage/` for the usb target to merge; `run_usb` deletes it
+   afterwards. For the x86_64 target the ISO never leaves the
+   container: one `mkarchiso` run, then `make_disk_image` packs it.
+ * `archiso` depends on `dosfstools` and `mtools`, so the x86_64
+   container already has what the packing needs.
+ * `inspect.sh` only prints `Boot:` when the image has a `cmdline.txt`
+   (Pi targets).
+
+Why not go further and keep only `just build-usb`, as first suggested:
+a hybrid image needs both architectures, so it needs qemu-user on
+whichever one the host isn't. Dropping the single-architecture targets
+would mean no build at all is possible on a host without binfmt_misc
+set up — including the machine this was developed on. `just build` on
+x86_64 and `just build-rpi5` on arm64 stay native.
+
+What is lost: legacy BIOS boot, which only the ISO could do.
+
+### Verification
+
+`just build` produced `arch-iso-2026.10.25-x86_64.img`, 1.4 GB (the
+1.6 GB ISO minus syslinux and grub), and `just inspect` reported no
+secrets, the overlay, and "the config partition holds only the
+templates: the image is generic". No `.iso` is left in `out/`.
+
+A copy was provisioned with `provision.sh` (mtools, into the image) and
+booted in QEMU through **OVMF**, with no `-kernel` shortcut: UEFI →
+systemd-boot → the kernel found the FAT partition by the ISO's search
+UUID → copied the rootfs to RAM → the loader installed WiFi, WireGuard,
+`authorized_keys` and the webhook, generated the host keys and wrote
+them back to `archiso-config/ssh/host/` on the image, and sshd came up
+listening with them. `provision.sh` also correctly refused an
+unconfigured `secrets/` ("authorized_keys has no keys").
+
+Still untested: the `rpi5` and `usb` images (no arm64 emulation on this
+host), and real hardware.

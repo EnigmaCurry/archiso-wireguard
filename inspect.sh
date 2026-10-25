@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Show what this repo put into a built ISO or .img (rpi5 or usb): image
+# Show what this repo put into a built image: image
 # name, hostname, and the owner/mode of every overlay file (never their
 # contents), plus the config partition's archiso-config/ listing for an
-# .img. Fails if the image contains any secret, which would make it
+# .img. Fails if it contains any secret, which would make the image
 # unsafe to publish: the image is meant to be generic and configured
 # afterwards, on the stick.
 #
-# Usage: inspect.sh [IMAGE]   (default: newest .iso or .img in out/)
-# A usb .img has two live systems (x86_64 and aarch64); both are checked.
+# Usage: inspect.sh [IMAGE]   (default: newest image in out/)
+# A usb image has two live systems (x86_64 and aarch64); both are checked.
 #
 # On the host, this re-runs itself inside the same container build.sh
 # uses for this host's architecture (Arch Linux on amd64, Arch Linux ARM
@@ -49,7 +49,7 @@ run_container() {
     command -v podman >/dev/null || die "podman is not installed"
     if [[ -z ${iso} ]]; then
         iso=$(ls -t "${OUT}"/*.iso "${OUT}"/*.img 2>/dev/null | head -1) || true
-        [[ -n ${iso} ]] || die "no ISO or .img in out/ (run: just build or just build-rpi5)"
+        [[ -n ${iso} ]] || die "no image in out/ (run: just build, just build-rpi5 or just build-usb)"
     fi
     [[ -f ${iso} ]] || die "no such image: ${iso}"
     iso=$(realpath "${iso}")
@@ -140,7 +140,7 @@ inspect_config() {
 # An ISO has arch/x86_64/airootfs.sfs, an rpi5 .img arch/aarch64/, and
 # a usb .img both. Each is inspected.
 inspect_iso() {
-    local iso=$1 arch sfs config found=0 failed=0
+    local iso=$1 arch sfs config cmdline found=0 failed=0
     # The imported Arch Linux ARM image has no pacman keyring yet.
     if [[ $(uname -m) == aarch64 ]]; then
         { pacman-key --init && pacman-key --populate archlinuxarm; } >/dev/null 2>&1
@@ -151,9 +151,11 @@ inspect_iso() {
 
     echo "Image:    $(basename "${iso}") ($(du -h "${iso}" | cut -f1))"
     if [[ ${iso} == *.img ]]; then
-        # build.sh puts the FAT partition at 1 MiB.
-        echo "Boot:     $(MTOOLS_SKIP_CHECK=1 mtype -i "${iso}@@1M" ::cmdline.txt)"
-        echo "          $(MTOOLS_SKIP_CHECK=1 mdir -b -i "${iso}@@1M" :: | sed 's|^::/||' | grep -vE '\.dtb$' | sort | paste -sd ' ')"
+        # build.sh puts the FAT partition at 1 MiB. cmdline.txt is the
+        # Pi's kernel command line; an x86_64-only image has none.
+        cmdline=$(MTOOLS_SKIP_CHECK=1 mtype -i "${iso}@@1M" ::cmdline.txt 2>/dev/null) \
+            && echo "Boot:     ${cmdline}"
+        echo "Files:    $(MTOOLS_SKIP_CHECK=1 mdir -b -i "${iso}@@1M" :: | sed 's|^::/||' | grep -vE '\.dtb$' | sort | paste -sd ' ')"
         # The config partition, as the user will find it on the stick.
         echo "Config:   ${CONFIG_DIR}/ on the FAT partition:"
         config=$(MTOOLS_SKIP_CHECK=1 mdir -b -i "${iso}@@1M" -/ "::/${CONFIG_DIR}" 2>/dev/null) || true
