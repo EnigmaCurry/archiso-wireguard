@@ -1196,9 +1196,14 @@ Two traps in that container check, for next time:
    property of the test harness, not of the image; a real boot
    sandboxes normally.
 
-Still untested: a real Pi 5 boot of the fixed image, and `pacstrap -K`
-onto an NVMe from it. `-K` is the check worth running there, since it
-implies `-G` and so proves the target keyring is built from
+Then confirmed on a real Pi 5, booted from the rebuilt stick: the fix
+holds outside the container, so the trust comes from
+`pacman-init.service` on an actual boot and not from anything the test
+harness arranged.
+
+One thing to know before installing from it: `pacstrap` needs more than
+archiso's 256M cowspace, so `mount -o remount,size=6G
+/run/archiso/cowspace` first. `pacstrap -K` is the variant worth using,
+since `-K` implies `-G` and so proves the target keyring is built from
 `/usr/share/pacman/keyrings/` rather than inheriting the live system's
-trust. Note that `pacstrap` needs more than archiso's 256M cowspace:
-`mount -o remount,size=6G /run/archiso/cowspace` first.
+trust.
