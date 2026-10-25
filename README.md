@@ -384,6 +384,34 @@ A stick with no configuration at all still boots. It just has no WiFi,
 no VPN, no SSH login and no webhook, and says so on the console and in
 the journal.
 
+## The login banner
+
+Logging in (over SSH or on the console) shows which image booted:
+
+```
+      /\         arch-iso
+     /  \        --------
+    /\   \       OS       Arch Linux ARM (aarch64)
+   /      \      Image    arch-rpi5 2026.10.25
+  /   ,,   \     Kernel   6.18.58-1-rpi-16k
+ /   |  |   \    Host     Raspberry Pi 500 Rev 1.0
+/_-''    ''-_\   CPU      Cortex-A76 (4 cores)
+                 Memory   15.8 GiB
+                 Docs     https://archlinuxarm.org/wiki
+
+Install Arch Linux with `archinstall`, or run `Installation_guide` for the guide.
+Configuration loaded from the stick: journalctl -u arch-iso-config
+```
+
+[`arch-iso-motd`](airootfs/usr/local/bin/arch-iso-motd) renders it from
+the booted system's `/etc/os-release`, and
+`arch-iso-motd.service` writes it to `/etc/motd` in early boot, before
+sshd and the console getty. One overlay builds every image, so nothing
+about the image is baked into the banner: `OS` and `Image` come from the
+live system that actually booted (`arch-iso` on x86_64, `arch-rpi5` on
+the Pi, which is the useful part on a stick carrying both). Run
+`arch-iso-motd` by hand to print it again.
+
 ## Raspberry Pi 5
 
 `just build-rpi5` builds the same live environment for the Raspberry

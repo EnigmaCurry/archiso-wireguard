@@ -1060,3 +1060,53 @@ logo built around the Arch "A" were both combined marks, so:
    (512x512): a USB stick with a rocket plume, WiFi, terminal, VPN
    shield and mini-PC icons, again without the Arch, WireGuard or
    Raspberry Pi marks.
+## A login banner that says which image booted (2026-10-25)
+
+The stock releng `/etc/motd` is the Arch installer's welcome text
+(install guide, `iwctl`, `mmcli`) and says nothing about which of these
+images you are on. That matters most on the usb stick, which carries
+both live systems: the only thing that distinguishes them at runtime is
+the `/etc/os-release` of whichever one booted --
+`PRETTY_NAME=Arch Linux ARM` and `IMAGE_ID=arch-rpi5` on the Pi,
+`Arch Linux` and `arch-iso` on x86_64 (mkarchiso stamps `IMAGE_ID` and
+`IMAGE_VERSION` in from `iso_name` and `iso_version`).
+
+So the banner is rendered at boot, not baked into the overlay:
+`airootfs/usr/local/bin/arch-iso-motd` reads `/etc/os-release` and
+prints a neofetch-style block -- Arch's ASCII logo in the distro's own
+`ANSI_COLOR`, then OS (with `uname -m`), image and version, kernel,
+machine, CPU and memory, and `DOCUMENTATION_URL`, which also differs per
+image (archlinuxarm.org/wiki vs wiki.archlinux.org). The installer
+pointer the stock motd existed for survives as a one-line footer, next
+to a `journalctl -u arch-iso-config` hint.
+
+`arch-iso-motd.service` runs it with `--write` in early boot (the same
+`DefaultDependencies=no`, `Before=sysinit.target` shape as
+`arch-iso-config.service`, plus an explicit `Before=sshd.service
+systemd-user-sessions.service getty@tty1.service`), and it replaces
+`/etc/motd` by rename so a login can never read a half-written file.
+That file is what a login actually prints: Arch's sshd drop-in sets
+`PrintMotd no`, and `pam_motd` in `system-login` prints `/etc/motd` for
+SSH and the console alike.
+
+Two details worth keeping:
+
+ * The ASCII logo is deliberate. The banner also shows on the Linux
+   console, whose font has none of the block characters the prettier
+   Arch logos are drawn with.
+ * os-release is sourced, which means its keys land in the script's own
+   namespace -- and one of them is `LOGO`. The first version held the
+   ASCII art in a `LOGO` array, and `LOGO=archlinux-logo` ate its first
+   line. Everything is now defined after the `.` line, and the art is
+   `ART`.
+
+Tested on the running Pi 500 (rpi5 image, aarch64): prints the block
+above, `--write` installs it atomically, and a fresh `ssh arch-iso`
+shows it. On an x86_64 host with `OS_RELEASE=` pointed at a stub copy of
+the Arch ISO's os-release: `Arch Linux (x86_64)` / `arch-iso
+2026.10.25` / `wiki.archlinux.org`, DMI for the machine name. With no
+os-release at all it still renders (falls back to `Linux`, a cyan logo,
+and drops the Image and Docs rows).
+
+Still untested: the banner on a real x86_64 boot of the image, and both
+halves of the usb stick.
