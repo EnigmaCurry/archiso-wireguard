@@ -12,6 +12,16 @@
 -edk2-shell
 -efibootmgr
 
+# Arch Linux ARM's package signing key. Load-bearing: every package in
+# every ALARM repo, core included, is signed by their build system, and
+# pacman.conf says SigLevel = Required. releng's packages.aarch64 brings
+# Arch's keyring only, so without this one the live system cannot
+# install a single package -- not even archlinuxarm-keyring itself,
+# which is signed by the key it carries. releng's pacman-init.service
+# runs "pacman-key --populate" with no argument, so this is trusted at
+# boot with nothing else to do.
+archlinuxarm-keyring
+
 # Pi 5 kernel (16K pages, bcm2712 only) and firmware
 linux-rpi-16k
 firmware-raspberrypi

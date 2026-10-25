@@ -1110,3 +1110,95 @@ and drops the Image and Docs rows).
 
 Still untested: the banner on a real x86_64 boot of the image, and both
 halves of the usb stick.
+
+## The Pi image could not install a single ALARM package (2026-10-25)
+
+Found while writing the Arch install documentation, on a Pi 5 booted
+from `arch-usb-2026.10.25-x86_64+rpi5.img`: the rpi5 live system is
+unusable as an installer. Every package fails, the kernel included.
+
+```
+# pacman -Sw linux-rpi-16k
+:: Import PGP key 77193F152BDBE6A6, "Arch Linux ARM Build System ..."? [Y/n]
+error: linux-rpi-16k: signature from "Arch Linux ARM Build System
+       <builder@archlinuxarm.org>" is unknown trust
+error: failed to commit transaction (invalid or corrupted package (PGP signature))
+```
+
+And it cannot bootstrap out of it: `archlinuxarm-keyring` is itself
+signed by the key it carries, so installing the fix needs the fix.
+
+The image shipped Arch's keyring and nothing else:
+
+```
+# ls /usr/share/pacman/keyrings/
+archlinux-revoked  archlinux-trusted  archlinux.gpg
+# pacman -Q archlinuxarm-keyring
+error: package 'archlinuxarm-keyring' was not found
+```
+
+Every package in every Arch Linux ARM repo -- `core` and `extra`
+included, not just `alarm` -- is signed by their build system, and
+pacman.conf says `SigLevel = Required DatabaseOptional`. The key gets
+imported on demand but stays at `[ unknown]` trust, which `Required`
+rejects. The build never noticed because trust in that key was arranged
+in the *build container*: `install_archiso_alarm` populates
+`archlinuxarm` there on an arm64 host, and the cross-build path
+`--recv-keys`/`--lsign-key`s it (see
+[rpi5 and usb cross-built on an x86_64 host](#rpi5-and-usb-cross-built-on-an-x86_64-host-2026-10-24)).
+Nothing ever put the keyring inside the image.
+
+Fix: one line in `packages.rpi5`, `archlinuxarm-keyring`. That is
+sufficient on its own because releng's `pacman-init.service` runs
+
+```
+ExecStart=/usr/bin/pacman-key --init
+ExecStart=/usr/bin/pacman-key --populate
+```
+
+with no keyring argument, so it populates every keyring in
+`/usr/share/pacman/keyrings/` at boot. The package is in ALARM's `core`
+(`20240419-2`), so the "skip what ALARM doesn't have" filter in
+`rpi5_packages` keeps it. x86_64 was never affected: `base` pulls
+`archlinux-keyring` and its packages are Arch-signed.
+
+Verified without hardware, which turned out to be worth the trouble.
+`just build-rpi5`, then the image's own airootfs.sfs extracted from the
+FAT partition and run under qemu-user with
+`podman run --arch arm64 --rootfs`, doing exactly what
+`pacman-init.service` does:
+
+```
+# pacman-key --init && pacman-key --populate
+==> Appending keys from archlinux.gpg...
+==> Appending keys from archlinuxarm.gpg...
+# pacman-key --list-keys 68B3537F39A313B3E574D06777193F152BDBE6A6
+uid           [  full  ] Arch Linux ARM Build System <builder@archlinuxarm.org>
+# pacman -Sw linux-rpi-16k archlinuxarm-keyring base
+checking keyring...
+checking package integrity...                       # no signature error
+# pacman-key -v /tmp/cache/linux-rpi-16k-*.pkg.tar.xz.sig
+gpg: Good signature from "Arch Linux ARM Build System ..." [full]
+```
+
+`[ full ]` and not `[ unknown]` is the whole fix: it comes from the
+keyring in the image, with no `pacman-key --lsign-key` anywhere.
+
+Two traps in that container check, for next time:
+
+ * `unsquashfs` as a normal user warns about `security.capability`
+   xattrs it cannot restore and exits non-zero; `-no-xattrs` is needed,
+   and the extracted tree's root is mode 0555, so cleaning it up wants
+   a `chmod -R u+w` first.
+ * pacman 7 sandboxes downloads with Landlock, which is not available
+   in that container (`restricting filesystem access failed because
+   Landlock is not supported by the kernel`). `--disable-sandbox` is a
+   property of the test harness, not of the image; a real boot
+   sandboxes normally.
+
+Still untested: a real Pi 5 boot of the fixed image, and `pacstrap -K`
+onto an NVMe from it. `-K` is the check worth running there, since it
+implies `-G` and so proves the target keyring is built from
+`/usr/share/pacman/keyrings/` rather than inheriting the live system's
+trust. Note that `pacstrap` needs more than archiso's 256M cowspace:
+`mount -o remount,size=6G /run/archiso/cowspace` first.
