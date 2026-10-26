@@ -27,6 +27,8 @@
 #                    over a pty, as "setuptest")
 #   KEEP=1           leave the VM's disks in test/ afterwards
 #   SSH_PORT=2222    host port forwarded to the VM's sshd
+#   FW_CODE, FW_VARS the x86_64 UEFI firmware's code and vars files,
+#                    when they are somewhere this script doesn't look
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -83,10 +85,21 @@ find_image() {
 # UEFI firmware, as a code + vars pair: the edk2 build qemu ships with
 # itself (Homebrew, Arch), or the distribution's OVMF package.
 find_firmware() {
-    local share pair code vars
+    local share real pair code vars
+    if [[ -n ${FW_CODE:-} || -n ${FW_VARS:-} ]]; then
+        [[ -f ${FW_CODE:-} && -f ${FW_VARS:-} ]] || die "FW_CODE and FW_VARS must both name existing files"
+        return
+    fi
     share="$(dirname "$(command -v qemu-system-x86_64)")/../share/qemu"
+    # Through the symlinks too: on NixOS the command is a link from
+    # /run/current-system/sw/bin into qemu's store path.
+    real=$(realpath "$(command -v qemu-system-x86_64)" 2>/dev/null) || real=
+    real="$(dirname "${real:-$(command -v qemu-system-x86_64)}")/../share/qemu"
     for pair in \
         "${share}/edk2-x86_64-code.fd ${share}/edk2-i386-vars.fd" \
+        "${real}/edk2-x86_64-code.fd ${real}/edk2-i386-vars.fd" \
+        "${HOME}/.nix-profile/share/qemu/edk2-x86_64-code.fd ${HOME}/.nix-profile/share/qemu/edk2-i386-vars.fd" \
+        "/run/current-system/sw/share/qemu/edk2-x86_64-code.fd /run/current-system/sw/share/qemu/edk2-i386-vars.fd" \
         "/opt/homebrew/share/qemu/edk2-x86_64-code.fd /opt/homebrew/share/qemu/edk2-i386-vars.fd" \
         "/usr/local/share/qemu/edk2-x86_64-code.fd /usr/local/share/qemu/edk2-i386-vars.fd" \
         "/usr/share/edk2/x64/OVMF_CODE.4m.fd /usr/share/edk2/x64/OVMF_VARS.4m.fd" \
@@ -99,7 +112,7 @@ find_firmware() {
             return
         fi
     done
-    die "no x86_64 UEFI firmware found (qemu's edk2-x86_64-code.fd, or OVMF)"
+    die "no x86_64 UEFI firmware found (qemu's edk2-x86_64-code.fd, or OVMF): set FW_CODE and FW_VARS to its code and vars files"
 }
 
 accel() {

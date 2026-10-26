@@ -1160,3 +1160,8 @@ they need an Arch live system.
    and inspect.sh do, provision.sh did not (it was only ever run on
    amd64, where the official image ships one). It now initializes and
    populates the keyring first, as inspect.sh does.
+ * On NixOS, test-vm found no UEFI firmware: qemu-system-x86_64 is a
+   link from /run/current-system/sw/bin, where ../share/qemu is not
+   there. It now also looks next to the resolved binary (qemu's store
+   path, which has edk2-x86_64-code.fd), and FW_CODE/FW_VARS name the
+   firmware files directly when they are elsewhere.
