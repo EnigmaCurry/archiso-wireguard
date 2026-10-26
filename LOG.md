@@ -1905,3 +1905,61 @@ and not proof, and this runs as root on a machine about to repartition
 a disk. Signing commits and checking `git verify-commit` is the upgrade
 path; until then the diff is the safeguard, which is why it is not
 optional.
+
+## setup wireguard: the target gets a tunnel of its own (2026-10-26)
+
+The installer comes up on WireGuard automatically, which is most of why
+a headless install works at all -- and the obvious next thought is to
+give the installed machine the same thing before it reboots. The
+stick's own `wg0.conf` cannot be copied: that key *is* the stick's
+identity to the server, and two machines sharing one identity is not a
+configuration, it is a bug waiting.
+
+So `setup wireguard` writes a new one. It asks first how the key should
+come about:
+
+ * `genkey` (the default) makes the key on the live system, prints only
+   the *public* half for the provider or your own server to add as a
+   peer, then takes the configuration they hand back and splices the
+   private key in -- replacing a placeholder `PrivateKey` line if there
+   is one, inserting it under `[Interface]` if there is not. The
+   provider never sees the secret.
+ * `paste` takes a complete `wg0.conf`, private key included, for when
+   that is what you were given.
+
+Either way the configuration is pasted at the terminal and ends at
+Ctrl-D, so nobody has to edit a file on a machine they are installing.
+
+Where things go follows what the repo already does with secrets. The
+key is written to the target's `/etc/wireguard/wg0.conf`, 0600
+root:root, and `90-ignore.sh` gains `IgnorePath '/etc/wireguard/*'`
+beside the existing `/etc/ssh/ssh_host_*` -- so `admin diff` does not
+report it as drift and it never enters git. What *is* configuration goes
+in the host repo: `wireguard-tools` in packages.txt, `wg-quick@wg0` in
+units.txt. Run before `setup install` and the install picks both up; run
+after, and it installs the package and enables the unit itself.
+
+Two details worth having found:
+
+ * A `DNS =` line means `wg-quick` will call `resolvconf`, which the
+   target does not have -- `base` does not bring it and the live
+   system's copy comes from releng. So a config with DNS also adds
+   `systemd-resolvconf`, or the unit would fail on first boot.
+ * Nothing is echoed back. The install log is teed into the host repo
+   and committed, so printing the configuration would commit a private
+   key. The review shows the address, endpoint, AllowedIPs, DNS and
+   keepalive, and says of the key only that it is not shown. The paste
+   itself is echoed by the terminal, not by setup, so it stays out of
+   the log too.
+
+Offered by the step chain between `install` and `reboot`, which is when
+it has to happen, with Enter skipping it. Not under `--yes`: it waits
+for a paste, so accepting unattended would hang.
+
+Verified in a live VM against a provider-style config with a
+placeholder key: the placeholder was replaced, the file landed 0600
+with one PrivateKey line, packages.txt gained wireguard-tools and
+systemd-resolvconf, units.txt gained wg-quick@wg0, the ignore rule was
+added, the repo was committed -- and the generated key appears zero
+times in the install log, zero times anywhere in the host repo, and
+zero times in git's objects. just test-vm still passes (1m48s, 12/12).

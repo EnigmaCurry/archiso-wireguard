@@ -16,6 +16,9 @@
 #                      accounts, SSH, then run the check. FILE holds
 #                      name:password lines (or name:$6$... hashes) for
 #                      root, admin and user, for an unattended install
+#   wireguard          give the installed system its own WireGuard tunnel:
+#                      generate a key (so the provider never sees it) or
+#                      paste a wg0.conf you already have
 #   check              the pre-flight check for the system under /mnt
 #   reboot             check, unmount and reboot (refuses if a check fails)
 #
@@ -34,7 +37,9 @@
 #
 # The host repo holds no secrets. Passwords are asked for during
 # install and stored nowhere else; WiFi passphrases are copied from the
-# live system into the target, never into the repo.
+# live system into the target, never into the repo; and the WireGuard
+# key 'setup wireguard' writes goes to the target's /etc/wireguard,
+# which 90-ignore.sh keeps out of aconfmgr's sight.
 set -euo pipefail
 
 HOST_REPO=${HOST_REPO:-/root/arch}
@@ -295,6 +300,19 @@ base_packages() {
 repo_packages() {
     [[ -f ${HOST_REPO}/packages.txt ]] || return 0
     sed -e 's/#.*//' -e '/^\s*$/d' "${HOST_REPO}/packages.txt" | tr -s ' \n' '\n' | sed '/^$/d'
+}
+
+# Add a word to one of the host repo's lists, once. Returns 1 when it
+# was already there, so callers can report only what they changed.
+repo_add() {
+    local file=${HOST_REPO}/$1 word=$2
+    [[ -f ${file} ]] || return 1
+    if grep -qxF "${word}" <(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "${file}"); then
+        return 1
+    fi
+    printf '%s\n' "${word}" >>"${file}"
+    msg "  ${1}: added ${word}"
+    return 0
 }
 
 repo_units() {
@@ -1430,6 +1448,130 @@ cmd_install() {
     cmd_check || true
 }
 
+# --- wireguard --------------------------------------------------------------
+
+# The stick's own tunnel is the stick's: its key identifies that stick to
+# the server, and copying it would give two machines one identity. The
+# installed system gets its own.
+#
+# Nothing here is echoed back. The log is teed into the host repo and
+# committed, so printing the configuration would put a private key in
+# git. Only the public key -- which is public -- and a redacted summary
+# are shown.
+wg_field() { grep -iE "^[[:space:]]*${2}[[:space:]]*=" <<<"$1" | head -1 | sed -E 's/^[^=]*=[[:space:]]*//'; }
+
+# Read a pasted file from the terminal. Ends at EOF (Ctrl-D), which is
+# why it is not a prompt(): the whole point is to paste several lines.
+read_pasted() {
+    msg "$1"
+    msg "  (paste it, then press Ctrl-D on a line of its own)"
+    cat
+}
+
+cmd_wireguard() {
+    local mode conf priv pub addr endpoint allowed dns keep tmp
+    load_host
+    layout_mounted || die "${TARGET} is not mounted: run 'setup disk --mount' first"
+
+    section "WireGuard for ${HOSTNAME}"
+    command -v wg >/dev/null || die "wg is not installed on this live system"
+
+    hint "genkey -- make the key here, so your provider never sees it"
+    hint "paste  -- you already have a wg0.conf, private key included"
+    while prompt mode "Key" "genkey"; do
+        [[ ${mode} == genkey || ${mode} == paste ]] && break
+        echo "  answer genkey or paste" >&2
+    done
+
+    priv=
+    if [[ ${mode} == genkey ]]; then
+        priv=$(wg genkey)
+        pub=$(wg pubkey <<<"${priv}")
+        echo
+        msg "This machine's public key -- give this to your provider, or add it"
+        msg "as a peer on your own server. The private key stays here."
+        echo
+        msg "    ${pub}"
+        echo
+        conf=$(read_pasted "Now paste the configuration they give you back.")
+    else
+        conf=$(read_pasted "Paste the wg0.conf, private key and all.")
+    fi
+    [[ -n ${conf} ]] || die "nothing pasted"
+
+    # A generated key replaces whatever placeholder came back, or is
+    # added if the config has no PrivateKey line at all.
+    if [[ -n ${priv} ]]; then
+        if grep -qiE '^[[:space:]]*PrivateKey[[:space:]]*=' <<<"${conf}"; then
+            conf=$(sed -E "s|^[[:space:]]*PrivateKey[[:space:]]*=.*|PrivateKey = ${priv}|I" <<<"${conf}")
+            msg "  replaced the PrivateKey line with the key generated here"
+        else
+            conf=$(sed -E "s|^[[:space:]]*\[Interface\][[:space:]]*$|[Interface]\nPrivateKey = ${priv}|I" <<<"${conf}")
+            msg "  added the PrivateKey generated here"
+        fi
+    fi
+
+    grep -qiE '^[[:space:]]*\[Interface\]' <<<"${conf}" || die "no [Interface] section: that is not a wg0.conf"
+    grep -qiE '^[[:space:]]*\[Peer\]' <<<"${conf}"      || die "no [Peer] section: nothing for it to connect to"
+    grep -qiE '^[[:space:]]*PrivateKey[[:space:]]*=[[:space:]]*\S' <<<"${conf}" \
+        || die "no PrivateKey: paste a complete config, or run again and choose genkey"
+
+    addr=$(wg_field "${conf}" Address)
+    endpoint=$(wg_field "${conf}" Endpoint)
+    allowed=$(wg_field "${conf}" AllowedIPs)
+    dns=$(wg_field "${conf}" DNS)
+    keep=$(wg_field "${conf}" PersistentKeepalive)
+    [[ -n ${addr} ]]     || warn "no Address in [Interface]: the tunnel will have no address"
+    [[ -n ${endpoint} ]] || warn "no Endpoint in [Peer]: this machine will wait to be called"
+    [[ -n ${keep} ]]     || warn "no PersistentKeepalive: behind NAT the tunnel will go quiet (25 is usual)"
+
+    echo
+    echo "================ Review ================="
+    printf '%-13s %s\n' "Address:" "${addr:-(none)}"
+    printf '%-13s %s\n' "Endpoint:" "${endpoint:-(none)}"
+    printf '%-13s %s\n' "AllowedIPs:" "${allowed:-(none)}"
+    printf '%-13s %s\n' "DNS:" "${dns:-(none)}"
+    printf '%-13s %s\n' "Keepalive:" "${keep:-(none)}"
+    printf '%-13s %s\n' "PrivateKey:" "(not shown, and never written to the repo)"
+    printf '%-13s %s\n' "Writes:" "${TARGET}/etc/wireguard/wg0.conf, 0600 root:root"
+    echo "========================================="
+    echo
+    confirm "Install this tunnel for ${HOSTNAME}?" || { msg "Nothing written."; return 0; }
+
+    tmp=$(mktemp)
+    # shellcheck disable=SC2064 # expand now: tmp is local
+    trap "rm -f '${tmp}'" RETURN
+    printf '%s\n' "${conf}" >"${tmp}"
+    run install -D -m 0600 -o root -g root "${tmp}" "${TARGET}/etc/wireguard/wg0.conf"
+
+    # The host repo describes the machine, so the package and the unit
+    # belong there. The key does not.
+    repo_add packages.txt wireguard-tools
+    [[ -n ${dns} ]] && repo_add packages.txt systemd-resolvconf \
+        && msg "  DNS= needs a resolvconf: added systemd-resolvconf"
+    repo_add units.txt 'wg-quick@wg0'
+    if ! grep -q "^IgnorePath '/etc/wireguard/\*'" "${HOST_REPO}/aconfmgr/90-ignore.sh" 2>/dev/null; then
+        printf "\n# The tunnel's key, written by 'setup wireguard'.\nIgnorePath '/etc/wireguard/*'\n" \
+            >>"${HOST_REPO}/aconfmgr/90-ignore.sh"
+        msg "  aconfmgr/90-ignore.sh: ignoring /etc/wireguard/*"
+    fi
+
+    # If the system is already installed, finish the job now; otherwise
+    # 'setup install' will, from the repo.
+    if [[ -x ${TARGET}/usr/bin/pacman ]]; then
+        SNAP_PAC_SKIP=y in_target pacman -S --needed --noconfirm wireguard-tools \
+            ${dns:+systemd-resolvconf}
+        in_target systemctl enable 'wg-quick@wg0'
+    else
+        msg "  not installed yet: 'setup install' will add the package and enable the unit"
+    fi
+
+    commit_repo "${HOST_REPO}" "setup wireguard: ${HOSTNAME}"
+    echo
+    ok wireguard "wg0 for ${HOSTNAME}${addr:+ at ${addr}}"
+    msg "It comes up on the next boot. Check it there with: wg show"
+}
+
 # --- check ------------------------------------------------------------------
 
 # Print one line per check; return non-zero if any failed.
@@ -1578,6 +1720,7 @@ cmd_status() {
     echo "  ${host} setup host      describe the machine (${HOST_REPO})"
     echo "  ${disk} setup disk      partition, format and mount under ${TARGET}"
     echo "  ${install} setup install   install, make it boot, network, users, SSH"
+    echo "    setup wireguard give this machine its own tunnel (optional)"
     echo "    setup check     the pre-flight check"
     echo "    setup reboot    check, unmount and reboot"
     echo
@@ -1590,14 +1733,22 @@ cmd_status() {
     # `check` is not in the chain: `install` already ends with one, and
     # `reboot` runs it again before it acts, so including it here would
     # print the same block three times.
-    local -a chain=(host disk install reboot)
+    local -a chain=(host disk install wireguard reboot)
     local step started=0
     for step in "${chain[@]}"; do
         [[ ${step} == "${next}" ]] && started=1
         ((started)) || continue
         # Nothing after the reboot is undoable from here, and wanting a
         # look around first is the normal case, so Enter declines it.
-        if [[ ${step} == reboot ]]; then
+        if [[ ${step} == wireguard ]]; then
+            # It waits for a pasted config, so there is no answering it
+            # unattended: --yes would accept and then hang on the paste.
+            ((YES)) && continue
+            # Optional, so Enter skips it -- but offered here, because
+            # after the reboot the machine is on its own.
+            hint "optional: its own WireGuard tunnel, so it comes up reachable"
+            confirm "Run 'setup ${step}' now?" n || continue
+        elif [[ ${step} == reboot ]]; then
             hint "the install is done and checked; reboot when you are ready"
             confirm "Run 'setup ${step}' now?" n || return 0
         else
@@ -1627,7 +1778,7 @@ main() {
     # a record of what was typed.
     if ((bare)); then start_log; else start_log "${cmd}" "$@"; fi
     case ${cmd} in
-        status|host|disk|install|check|reboot) "cmd_${cmd}" "$@" ;;
+        status|host|disk|install|wireguard|check|reboot) "cmd_${cmd}" "$@" ;;
         *) usage >&2; exit 2 ;;
     esac
 }
