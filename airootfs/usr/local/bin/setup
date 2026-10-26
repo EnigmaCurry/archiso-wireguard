@@ -19,6 +19,11 @@
 #   check              the pre-flight check for the system under /mnt
 #   reboot             check, unmount and reboot (refuses if a check fails)
 #
+# The installed system is kept in step with its host repo by aconfmgr
+# (https://github.com/CyberShadow/aconfmgr), through the 'admin'
+# command (diff, apply, save, upgrade) that setup installs, and
+# snapper snapshots / around every pacman transaction (snap-pac).
+#
 #   --yes              answer yes to review screens (never to erasing a
 #                      disk: that needs --confirm-wipe HOSTNAME)
 #
@@ -46,6 +51,10 @@ ADMIN="admin"
 DAILY=user
 # Arch Linux ARM's build key: untrusted on early BOOMSTICK Pi images.
 ALARM_KEY=68B3537F39A313B3E574D06777193F152BDBE6A6
+# aconfmgr is in neither Arch's nor ALARM's repos (only the AUR, as a
+# -git package): setup installs it from git, at a known commit.
+ACONFMGR_URL=https://github.com/CyberShadow/aconfmgr
+ACONFMGR_REV=96ab414343b9467fca5ef46f04bc1bd1fc7bd8f1
 
 YES=0
 CONFIRM_WIPE=
@@ -125,6 +134,9 @@ machine_name() {
 # The packages every install gets, by hardware: the book's PKGS block.
 base_packages() {
     local pkgs=(base btrfs-progs cryptsetup sudo openssh iwd vim)
+    # Maintenance: the host repo is a git repository, aconfmgr needs
+    # pacutils and expect, snapper and snap-pac take the snapshots.
+    pkgs+=(git pacutils expect snapper snap-pac)
     case $(arch) in
         x86_64)
             pkgs+=(linux linux-firmware)
@@ -282,6 +294,7 @@ systemd-networkd
 systemd-resolved
 iwd
 sshd
+snapper-cleanup.timer
 EOF
     seed etc/systemd/network/20-wired.network <<'EOF'
 [Match]
@@ -315,6 +328,325 @@ EOF
         install -m 0644 /root/.ssh/authorized_keys "${HOST_REPO}/authorized_keys"
         msg "  seeded authorized_keys ($(key_count "${HOST_REPO}/authorized_keys") key(s) from this stick)"
     fi
+    seed_maintenance
+}
+
+# The files that keep the installed system in step with the repo:
+# snapper's configuration, the admin command, and aconfmgr's
+# configuration (10-base.sh is written by install, from the hardware).
+seed_maintenance() {
+    seed .gitignore <<'EOF'
+# Written by 'admin save' for you to sort; not a part of the repo.
+aconfmgr/99-unsorted.sh
+EOF
+    seed etc/conf.d/snapper <<'EOF'
+## Path: System/Snapper
+
+## Type:        string
+## Default:     ""
+# List of snapper configurations.
+SNAPPER_CONFIGS="root"
+EOF
+    seed etc/snapper/configs/root <<'EOF'
+# Snapper configuration for / (the @ subvolume). Snapshots go in
+# /.snapshots, the @snapshots subvolume. snap-pac takes a pre and a
+# post snapshot around every pacman transaction; snapper-cleanup.timer
+# keeps the newest NUMBER_LIMIT of them. No hourly timeline.
+
+SUBVOLUME="/"
+FSTYPE="btrfs"
+QGROUP=""
+
+SPACE_LIMIT="0.5"
+FREE_LIMIT="0.2"
+
+ALLOW_USERS=""
+ALLOW_GROUPS=""
+SYNC_ACL="no"
+
+BACKGROUND_COMPARISON="yes"
+
+NUMBER_CLEANUP="yes"
+NUMBER_MIN_AGE="3600"
+NUMBER_LIMIT="10"
+NUMBER_LIMIT_IMPORTANT="5"
+
+TIMELINE_CREATE="no"
+TIMELINE_CLEANUP="yes"
+TIMELINE_MIN_AGE="3600"
+TIMELINE_LIMIT_HOURLY="0"
+TIMELINE_LIMIT_DAILY="0"
+TIMELINE_LIMIT_WEEKLY="0"
+TIMELINE_LIMIT_MONTHLY="0"
+TIMELINE_LIMIT_QUARTERLY="0"
+TIMELINE_LIMIT_YEARLY="0"
+
+EMPTY_PRE_POST_CLEANUP="yes"
+EMPTY_PRE_POST_MIN_AGE="3600"
+EOF
+    seed bin/admin <<'ADMIN'
+#!/usr/bin/env bash
+# Keep this machine and its host repo (~/arch) in step, with aconfmgr.
+# Written by setup; yours to edit (it is installed from ~/arch/bin/).
+#
+# Usage: admin COMMAND [ARGS]
+#   diff      list what differs between the machine and the repo;
+#             exits 1 if anything does. Changes nothing.
+#   save      write the machine's drift into the repo, as
+#             aconfmgr/99-unsorted.sh, for you to sort into the
+#             numbered files (or delete, then 'admin apply' to undo)
+#   apply     make the machine match the repo
+#   upgrade   refuse if the machine drifted, then pacman -Syu (which
+#             snap-pac snapshots before and after), apply, and report
+#             new .pacnew files and whether to reboot
+#
+# ARGS go to aconfmgr (to pacman as well, for upgrade): --yes answers
+# its questions.
+set -euo pipefail
+
+export HOST_REPO=${HOST_REPO:-${HOME}/arch}
+CONFIG=${HOST_REPO}/aconfmgr
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+usage() { sed -n '2,/^set -euo/p' "$0" | sed -e '/^set -euo/d' -e 's/^# \{0,1\}//'; }
+
+# The aconfmgr commands 99-unsorted.sh holds, without its comments.
+drift() { grep -vE '^\s*(#|$)' "$1" 2>/dev/null || true; }
+
+cmd_diff() {
+    local tmp out
+    tmp=$(mktemp -d)
+    # shellcheck disable=SC2064 # expand now: tmp is local
+    trap "rm -rf '${tmp}'" EXIT
+    # save, into a copy of the configuration, so the repo is untouched.
+    cp -a "${CONFIG}/." "${tmp}/"
+    rm -f "${tmp}/99-unsorted.sh"
+    aconfmgr --config "${tmp}" "$@" save >&2
+    out=$(drift "${tmp}/99-unsorted.sh")
+    if [[ -z ${out} ]]; then
+        echo "No drift: the machine matches ${HOST_REPO}."
+        return 0
+    fi
+    echo "Drift (as the aconfmgr lines that would describe it):"
+    drift "${tmp}/99-unsorted.sh" | sed 's/^/  /'
+    return 1
+}
+
+cmd_save() {
+    aconfmgr --config "${CONFIG}" "$@" save
+    if [[ -n $(drift "${CONFIG}/99-unsorted.sh") ]]; then
+        echo
+        echo "Wrote ${CONFIG}/99-unsorted.sh. Move what you meant into a numbered"
+        echo "file, delete the rest (and 'admin apply' to undo it), then commit."
+    fi
+}
+
+cmd_apply() {
+    aconfmgr --config "${CONFIG}" "$@" apply
+}
+
+cmd_upgrade() {
+    local before after
+    cmd_diff "$@" >/dev/null \
+        || die "the machine drifted from ${HOST_REPO}: run 'admin diff', then 'admin save' or 'admin apply'"
+    before=$(sudo find /etc -name '*.pacnew' | sort)
+    if [[ " $* " == *" --yes "* ]]; then
+        sudo pacman -Syu --noconfirm
+    else
+        sudo pacman -Syu
+    fi
+    cmd_apply "$@"
+    after=$(sudo find /etc -name '*.pacnew' | sort)
+    if [[ -n $(comm -13 <(echo "${before}") <(echo "${after}")) ]]; then
+        echo "New .pacnew files (merge them, then 'admin save'):"
+        comm -13 <(echo "${before}") <(echo "${after}") | sed 's/^/  /'
+    fi
+    if [[ ! -d /usr/lib/modules/$(uname -r) ]]; then
+        echo "Reboot: the running kernel ($(uname -r)) was upgraded."
+    fi
+}
+
+main() {
+    local cmd=${1:-}
+    (($#)) && shift
+    case ${cmd} in
+        diff|save|apply|upgrade) "cmd_${cmd}" "$@" ;;
+        -h|--help|help) usage ;;
+        *) usage >&2; exit 2 ;;
+    esac
+}
+
+main "$@"
+ADMIN
+    seed aconfmgr/00-helpers.sh <<'EOF'
+# aconfmgr configuration for this machine, built from the host repo
+# around it: host.env, packages.txt, units.txt, etc/ and bin/ are the
+# source, and these files turn them into aconfmgr's terms. Written by
+# setup; yours to edit. 'admin save' writes anything it finds that
+# these do not describe to 99-unsorted.sh, for you to sort.
+
+# The host repo. admin sets HOST_REPO when it runs aconfmgr on a copy.
+HOST_REPO=${HOST_REPO:-$(realpath "$config_dir/..")}
+
+# HostEnv KEY: KEY's value in host.env.
+function HostEnv() {
+    sed -n "s/^$1=//p" "$HOST_REPO/host.env" | tail -n 1
+}
+
+# RepoList FILE: the words in a host repo list file, one per line,
+# without comments.
+function RepoList() {
+    [[ -f $HOST_REPO/$1 ]] || return 0
+    sed -e 's/#.*//' "$HOST_REPO/$1" | tr -s ' \t' '\n' | sed '/^$/d'
+}
+
+# EnableUnits [--global] UNIT...: the links 'systemctl enable' makes for
+# these units, worked out by systemctl itself, against a copy of the
+# unit files (and the repo's own, under etc/systemd/).
+function EnableUnits() {
+    local scope=() root link
+    if [[ $1 == --global ]]; then
+        scope=(--global)
+        shift
+    fi
+    (($#)) || return 0
+    root=$(mktemp -d "$tmp_dir/units.XXXXXX")
+    mkdir -p "$root/usr/lib/systemd" "$root/etc/systemd"
+    cp -r /usr/lib/systemd/system /usr/lib/systemd/user "$root/usr/lib/systemd/"
+    if [[ -d $HOST_REPO/etc/systemd ]]; then
+        cp -r "$HOST_REPO/etc/systemd/." "$root/etc/systemd/"
+    fi
+    systemctl --root="$root" "${scope[@]}" enable "$@" >/dev/null
+    while IFS= read -r link; do
+        CreateLink "${link#"$root"}" "$(readlink "$link")"
+    done < <(find "$root/etc" -type l | sort)
+    rm -rf "$root"
+}
+EOF
+    seed aconfmgr/20-host.sh <<'EOF'
+# What 'setup install' wrote from host.env.
+
+HostEnv HOSTNAME >"$(CreateFile /etc/hostname)"
+echo "LANG=$(HostEnv LOCALE)" >"$(CreateFile /etc/locale.conf)"
+echo "KEYMAP=$(HostEnv KEYMAP)" >"$(CreateFile /etc/vconsole.conf)"
+CreateLink /etc/localtime "/usr/share/zoneinfo/$(HostEnv TIMEZONE)"
+
+locale=$(HostEnv LOCALE)
+sed -i -E "s/^#\s*(${locale//./\\.} )/\1/" "$(GetPackageOriginalFile glibc /etc/locale.gen)"
+
+if [[ $(HostEnv ENCRYPT) == yes ]]; then
+    sed -i -E '/^HOOKS=/ s/\bblock\b/block sd-encrypt/' \
+        "$(GetPackageOriginalFile mkinitcpio /etc/mkinitcpio.conf)"
+fi
+
+# systemd-resolved's stub, in place of the empty file from the
+# filesystem package.
+CreateLink /etc/resolv.conf /run/systemd/resolve/stub-resolv.conf
+EOF
+    seed aconfmgr/30-repo.sh <<'EOF'
+# The host repo's lists and files: packages.txt, etc/, bin/, units.txt.
+
+while IFS= read -r package; do
+    AddPackage "$package"
+done < <(RepoList packages.txt)
+
+# git keeps no file modes, so they are set here, by place (as setup
+# does).
+while IFS= read -r -d '' file; do
+    path=${file#"$HOST_REPO"}
+    case $path in
+        /etc/sudoers.d/*) cat "$file" >"$(CreateFile "$path" 440)" ;;
+        *) cat "$file" >"$(CreateFile "$path")" ;;
+    esac
+done < <(find "$HOST_REPO/etc" -type f -print0 2>/dev/null | sort -z)
+
+while IFS= read -r -d '' file; do
+    cat "$file" >"$(CreateFile "/usr/local/bin/${file##*/}" 755)"
+done < <(find "$HOST_REPO/bin" -maxdepth 1 -type f -print0 2>/dev/null | sort -z)
+
+mapfile -t units < <(RepoList units.txt)
+EnableUnits "${units[@]}"
+EOF
+    seed aconfmgr/40-system.sh <<'EOF'
+# What a fresh install has that neither packages nor the host repo
+# describe.
+
+# Enabled by the packages' install scripts.
+EnableUnits getty@.service remote-fs.target systemd-userdbd.socket
+EnableUnits --global p11-kit-server.socket
+
+# Made at boot, by systemd-tmpfiles or by units.
+SetFileProperty / mode 555
+CreateLink /etc/os-release ../usr/lib/os-release
+CreateDir /etc/audisp
+CreateDir /etc/audit/plugins.d 750
+CreateDir /etc/audit/rules.d
+CreateDir /etc/iwd
+
+# aconfmgr itself, installed by setup from git (see 90-ignore.sh).
+CreateLink /usr/lib/aconfmgr /usr/local/lib/aconfmgr/src
+CreateLink /usr/local/bin/aconfmgr /usr/local/lib/aconfmgr/aconfmgr
+EOF
+    seed aconfmgr/90-ignore.sh <<'EOF'
+# Files that are not configuration: state, caches, secrets, and what
+# setup owns. aconfmgr already ignores /dev /home /media /mnt /proc
+# /root /run /sys /tmp and /var/cache.
+
+# Written by setup for this disk, and remade by package hooks.
+IgnorePath '/boot/*'
+IgnorePath '/etc/fstab'
+IgnorePath '/etc/mkinitcpio.d/*.preset'
+
+# Accounts (setup makes them; passwords are never kept in the repo).
+IgnorePath '/etc/passwd' '/etc/passwd-'
+IgnorePath '/etc/group' '/etc/group-'
+IgnorePath '/etc/shadow' '/etc/shadow-'
+IgnorePath '/etc/gshadow' '/etc/gshadow-'
+IgnorePath '/etc/subuid' '/etc/subuid-'
+IgnorePath '/etc/subgid' '/etc/subgid-'
+IgnorePath '/etc/shells'
+IgnorePath '/etc/.pwd.lock'
+
+# Secrets and identity, made on first boot.
+IgnorePath '/etc/ssh/ssh_host_*'
+IgnorePath '/etc/machine-id'
+IgnorePath '/etc/pacman.d/gnupg'
+
+# Generated from what packages install.
+IgnorePath '/etc/ca-certificates/extracted/*'
+IgnorePath '/etc/ssl/certs/*'
+IgnorePath '/etc/ld.so.cache'
+IgnorePath '/etc/.updated' '/var/.updated'
+IgnorePath '/etc/adjtime'
+IgnorePath '/etc/pacman.d/mirrorlist'
+IgnorePath '/usr/lib/modules/*/modules.*'
+IgnorePath '/usr/lib/udev/hwdb.bin'
+IgnorePath '/usr/lib/locale/locale-archive'
+IgnorePath '/usr/lib/gconv/gconv-modules.cache'
+
+# State.
+IgnorePath '/var/lib/*'
+IgnorePath '/var/log/*'
+IgnorePath '/var/tmp/*'
+IgnorePath '/swap'
+IgnorePath '/.snapshots'
+
+# aconfmgr's own checkout (setup installs it; see 40-system.sh).
+IgnorePath '/usr/local/lib/aconfmgr'
+EOF
+}
+
+# aconfmgr/10-base.sh: the base packages for this hardware, rewritten on
+# every install (it is setup's, not yours: add packages to packages.txt).
+write_base_config() {
+    local pkgs=()
+    read -ra pkgs <<<"$(base_packages)"
+    mkdir -p "${HOST_REPO}/aconfmgr"
+    {
+        echo "# The packages 'setup install' picks for this hardware ($(machine_name))."
+        echo "# Rewritten by every install: add yours to packages.txt instead."
+        printf 'AddPackage %s\n' "${pkgs[@]}"
+    } >"${HOST_REPO}/aconfmgr/10-base.sh"
 }
 
 commit_repo() {
@@ -759,6 +1091,11 @@ apply_repo() {
             run install -D -m "${mode}" -o root -g root "${src}" "${TARGET}/${rel}"
         done < <(find "${HOST_REPO}/etc" -type f | sort)
     fi
+    if [[ -d ${HOST_REPO}/bin ]]; then
+        while IFS= read -r src; do
+            run install -D -m 0755 -o root -g root "${src}" "${TARGET}/usr/local/bin/${src##*/}"
+        done < <(find "${HOST_REPO}/bin" -maxdepth 1 -type f | sort)
+    fi
     # A sudoers drop-in the repo no longer has must not linger.
     if [[ ${ADMIN_NOPASSWD} != yes && -e ${TARGET}/etc/sudoers.d/10-admin && ! -e ${HOST_REPO}/etc/sudoers.d/10-admin ]]; then
         run rm -f "${TARGET}/etc/sudoers.d/10-admin"
@@ -834,6 +1171,24 @@ move_repo_in() {
     in_target chown -R "${ADMIN}:${ADMIN}" "/home/${ADMIN}/arch"
 }
 
+# aconfmgr, from git at ACONFMGR_REV, where its own launcher looks for
+# it when installed system-wide (/usr/lib/aconfmgr). The configuration
+# ignores the checkout (90-ignore.sh) and describes the links
+# (40-system.sh).
+install_aconfmgr() {
+    local dir=/usr/local/lib/aconfmgr
+    if [[ ! -d ${TARGET}${dir}/.git ]]; then
+        in_target git clone --quiet "${ACONFMGR_URL}" "${dir}"
+    fi
+    if [[ $(ask_target git -C "${dir}" rev-parse HEAD) != "${ACONFMGR_REV}" ]]; then
+        ask_target git -C "${dir}" cat-file -e "${ACONFMGR_REV}^{commit}" 2>/dev/null \
+            || in_target git -C "${dir}" fetch --quiet origin
+        in_target git -C "${dir}" -c advice.detachedHead=false checkout --quiet "${ACONFMGR_REV}"
+    fi
+    run ln -sfn "${dir}/src" "${TARGET}/usr/lib/aconfmgr"
+    run ln -sfn "${dir}/aconfmgr" "${TARGET}/usr/local/bin/aconfmgr"
+}
+
 cmd_install() {
     local pkgs extras
     while (($#)); do
@@ -861,7 +1216,8 @@ cmd_install() {
         "Units:        $(repo_units | tr '\n' ' ')" \
         "Accounts:     ${ADMIN} (1000, wheel$([[ ${ADMIN_NOPASSWD} == yes ]] && echo ", passwordless sudo")), ${DAILY}" \
         "SSH keys:     $(key_count "${HOST_REPO}/authorized_keys"), from ${HOST_REPO}/authorized_keys" \
-        "Host repo:    ${HOST_REPO} -> ${TARGET}/home/${ADMIN}/arch"
+        "Host repo:    ${HOST_REPO} -> ${TARGET}/home/${ADMIN}/arch" \
+        "Maintenance:  aconfmgr ${ACONFMGR_REV:0:7} (admin diff/apply/save/upgrade), snapper + snap-pac"
     confirm "Install?" || die "not installing"
 
     section "Packages";      refresh_keyring; install_packages
@@ -873,7 +1229,9 @@ cmd_install() {
     section "Live system";   live_side
     section "Accounts";      create_accounts
     section "Passwords";     set_passwords
+    section "aconfmgr";      install_aconfmgr
     section "Host repo moves in"
+    write_base_config
     # Committed here, as root, before it becomes admin's: git refuses to
     # work as root in a repository someone else owns.
     commit_repo "${HOST_REPO}" "setup install: ${HOSTNAME} ($(machine_name))"
@@ -969,6 +1327,14 @@ cmd_check() {
         ok ssh "${keys} key(s) for ${ADMIN}, sshd config parses"
     else
         bad ssh "${keys} key(s) for ${ADMIN}; check ownership/mode and 'sshd -t'"; failed=1
+    fi
+
+    if [[ -x ${TARGET}/usr/local/lib/aconfmgr/aconfmgr && -L ${TARGET}/usr/lib/aconfmgr \
+        && -x ${TARGET}/usr/local/bin/admin && -f ${TARGET}/etc/snapper/configs/root ]] \
+        && grep -q '^SNAPPER_CONFIGS="root"' "${TARGET}/etc/conf.d/snapper" 2>/dev/null; then
+        ok admin "aconfmgr $(ask_target git -C /usr/local/lib/aconfmgr rev-parse --short HEAD 2>/dev/null), snapper config root"
+    else
+        bad admin "aconfmgr, /usr/local/bin/admin or snapper's root config is missing"; failed=1
     fi
 
     n=$(find "${TARGET}/var/lib/iwd" -maxdepth 1 -type f 2>/dev/null | wc -l)

@@ -16,6 +16,10 @@
 #      with every prompt answered.
 #   4. Boots the installed disk alone, logs in as admin, and checks
 #      the hostname, the root subvolume, swap, sudo and failed units.
+#   5. Checks the maintenance tools: a pacman transaction leaves a
+#      snap-pac pre and post snapshot, and 'admin diff' (aconfmgr save
+#      into a copy of ~/arch/aconfmgr) finds nothing the host repo does
+#      not describe.
 #
 # Needs qemu (brew install qemu, or pacman -S qemu-full), podman (as for
 # the build, for provisioning) and ssh. On Apple Silicon the VM runs
@@ -284,9 +288,24 @@ check "root cannot ssh"           'sudo -n sshd -T | grep -qix "permitrootlogin 
 check "passwords are refused"     'sudo -n sshd -T | grep -qix "passwordauthentication no"'
 check "host repo is admin's"      '[ "$(stat -c %U ~/arch/host.env)" = admin ]'
 check "no failed units"           '[ -z "$(systemctl --failed --no-legend)" ]'
+check "admin and aconfmgr are installed" 'command -v admin && aconfmgr --help'
+check "snapper has a root config" 'sudo -n snapper --no-dbus -c root list'
 systemctl --failed --no-legend
 exit $fail
 EOF
+
+    phase "snap-pac snapshots pacman"
+    # Reinstalling a package changes nothing aconfmgr looks at.
+    vm admin@127.0.0.1 sudo -n pacman -S --noconfirm vim >/dev/null
+    vm admin@127.0.0.1 sudo -n snapper --no-dbus -c root list
+    [[ $(vm admin@127.0.0.1 sudo -n snapper --no-dbus -c root list --columns type) =~ pre.*post ]] \
+        || die "no pre and post snapshot after a pacman transaction"
+
+    phase "admin diff (aconfmgr)"
+    # stderr is aconfmgr's progress; stdout says whether it found drift.
+    vm admin@127.0.0.1 admin diff 2>/dev/null \
+        || die "admin diff found drift: the host repo does not describe the fresh install"
+
     vm admin@127.0.0.1 sudo -n systemctl poweroff || true
     wait_exit
     echo

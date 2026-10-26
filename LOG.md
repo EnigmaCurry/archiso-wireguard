@@ -1191,3 +1191,66 @@ they need an Arch live system.
    mounted: firmware, kernel or initramfs. Booted again with
    `console=ttyS0`, the same disk came up in 25 seconds. Taken for a
    TCG hiccup; not reproduced since.
+
+## Maintenance: aconfmgr, admin, snapper (2026-10-26)
+
+aconfmgr was chosen over decman: it is bash and plain files like setup
+and the host repo, and its save/apply loop is the book's "do it, then
+record it" workflow.
+
+ * aconfmgr is in neither Arch's nor Arch Linux ARM's repos; the AUR
+   has only aconfmgr-git. It is pure bash (`arch=any`) and its
+   dependencies (pacutils, expect, gawk, diffutils) are in both
+   distributions, so `setup install` clones it from GitHub at a pinned
+   commit (`ACONFMGR_REV`, 96ab414, 2026-06-25) into
+   /usr/local/lib/aconfmgr, with the links its launcher expects
+   (/usr/lib/aconfmgr, /usr/local/bin/aconfmgr). Building the AUR
+   package would need base-devel on every machine.
+ * The base packages gain git (the host repo is a git repository and
+   the target had none), pacutils, expect, snapper and snap-pac.
+ * A first `aconfmgr save` on a fresh install found 1831 new files and
+   13 packages, and took 9 minutes under TCG. Sorted, they were: what
+   the host repo already says (host.env, packages.txt, units.txt,
+   etc/), unit links that package install scripts make, and state,
+   caches and secrets. The host repo now has `aconfmgr/`, a
+   configuration that is *derived* from the repo rather than copied
+   into it:
+   - `00-helpers.sh`: HostEnv, RepoList, and EnableUnits, which works
+     out the links `systemctl enable` makes by running
+     `systemctl --root` against a copy of the unit files (aconfmgr has
+     no such helper, and Also=/Alias= make it more than WantedBy=).
+     `systemctl preset-all` does not reproduce a fresh install: Arch's
+     packages enable a few units in their install scripts instead.
+   - `10-base.sh`: the hardware's base packages, rewritten by every
+     `setup install`.
+   - `20-host.sh`: hostname, locale.conf, vconsole.conf, localtime,
+     the locale.gen and (ENCRYPT=yes) mkinitcpio.conf edits through
+     GetPackageOriginalFile, and resolv.conf's link.
+   - `30-repo.sh`: packages.txt, etc/ (sudoers.d 0440), bin/ (into
+     /usr/local/bin, 0755) and units.txt.
+   - `40-system.sh`: units the packages enable (getty@, remote-fs,
+     systemd-userdbd.socket, p11-kit-server.socket for users), `/` at
+     0555 (systemd-tmpfiles' root.conf sets that at every boot),
+     directories made at boot, and aconfmgr's links.
+   - `90-ignore.sh`: /boot and fstab (setup's), accounts and shadow,
+     host keys, machine-id, the pacman keyring and mirrorlist,
+     generated caches, /var/lib, /var/log, /var/tmp, /swap,
+     /.snapshots, and aconfmgr's checkout.
+   `99-unsorted.sh` is git-ignored, as aconfmgr's README advises.
+ * `admin` (seeded as ~/arch/bin/admin, installed to /usr/local/bin):
+   `diff` runs aconfmgr save into a copy of the configuration and
+   exits 1 on drift; `save` and `apply` are aconfmgr's; `upgrade`
+   refuses on drift, runs pacman -Syu, applies, lists new .pacnew
+   files and says when the running kernel was replaced. On the test
+   VM, after a package and a file were added by hand, `admin save`
+   wrote `AddPackage htop` and `CopyFile /etc/sysctl.d/99-test.conf`,
+   and `admin apply` removed both again.
+ * snapper: a root config for / on the existing @snapshots mount
+   (etc/snapper/configs/root and etc/conf.d/snapper in the host repo),
+   no hourly timeline, NUMBER_LIMIT=10, snapper-cleanup.timer in
+   units.txt, and snap-pac for the pacman pre/post snapshots.
+ * test-vm now also checks that admin, aconfmgr and snapper's root
+   config are there, that reinstalling a package leaves a pre and a
+   post snapshot, and that `admin diff` on the fresh install finds no
+   drift. A full `admin diff` takes about 1m15s under TCG.
+   The first full run with all of it passed in 11m20s.
