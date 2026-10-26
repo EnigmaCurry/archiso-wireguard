@@ -1147,3 +1147,9 @@ they need an Arch live system.
  * Not run yet. An attempt to build the image and run it in a cloud
    container failed at the first `pacman -Sy`: that container has no
    direct DNS, only an HTTPS proxy.
+
+## Running just test-vm on Apple Silicon (2026-10-26)
+
+ * `just build` failed at once with "./build.sh: Permission denied":
+   "Add setup" had committed `build.sh` as 100644, dropping its
+   executable bit. Restored to 100755.
