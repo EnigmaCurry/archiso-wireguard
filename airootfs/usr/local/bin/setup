@@ -65,6 +65,8 @@ ALARM_SHIPPED=1
 # --- output -----------------------------------------------------------------
 
 msg()  { echo "$*"; }
+# Guidance printed under a prompt: an example, and how to list the rest.
+hint() { echo "  $*" >&2; }
 warn() { echo "WARNING: $*" >&2; }
 die()  { echo "ERROR: $*" >&2; exit 1; }
 ok()   { printf '✓ %-10s %s\n' "$1" "$2"; }
@@ -100,6 +102,12 @@ confirm() {
     ((YES)) && return 0
     read -rp "? $1 (Y/n): " answer
     [[ -z ${answer} || ${answer} == [yY]* ]]
+}
+
+# A console keymap exists if kbd ships a .map.gz for it. Checked against
+# the files rather than localectl, which needs a running systemd-localed.
+keymap_exists() {
+    [[ -n $(find /usr/share/kbd/keymaps -name "${1}.map.gz" -print -quit 2>/dev/null) ]]
 }
 
 # prompt VAR "Question" default
@@ -758,7 +766,8 @@ pick_disk() {
         read -rep "? Number (${choice}): " -i "" i
         i=${i:-${choice}}
         [[ ${i} =~ ^[0-9]+$ ]] && ((i >= 1 && i <= ${#disks[@]})) && break
-        echo "  pick 1 to ${#disks[@]}" >&2
+        ((${#disks[@]} == 1)) && echo "  there is only one disk to choose: 1" >&2 \
+            || echo "  pick a number from 1 to ${#disks[@]}" >&2
     done
     IFS=$'\t' read -r name _ <<<"${disks[i - 1]}"
     by_id "${name}"
@@ -802,18 +811,26 @@ cmd_host() {
         fi
         prompt ENCRYPT "Encrypt the root filesystem with LUKS? (yes/no)" "${ENCRYPT}"
         [[ ${ENCRYPT} == y* ]] && ENCRYPT=yes || ENCRYPT=no
+        hint "a size like 8g, 512m, or 0 for none; 8g suits a 16 GiB machine"
         while prompt SWAP_SIZE "Swap file size, or 0 for none" "${SWAP_SIZE}"; do
             [[ ${SWAP_SIZE} =~ ^([0-9]+[kKmMgG]?|0)$ ]] && break
+            echo "  a number with an optional k, m or g suffix, or 0" >&2
         done
+        hint "e.g. America/Denver or UTC; all of them: timedatectl list-timezones"
         while prompt TIMEZONE "Time zone" "${TIMEZONE}"; do
             [[ -f /usr/share/zoneinfo/${TIMEZONE} ]] && break
             echo "  not in /usr/share/zoneinfo" >&2
         done
+        hint "e.g. en_US.UTF-8 or de_DE.UTF-8; all of them: grep UTF-8 /etc/locale.gen"
         while prompt LOCALE "Locale" "${LOCALE}"; do
             grep -qE "^#?\s*${LOCALE//./\\.} " /etc/locale.gen && break
             echo "  not in /etc/locale.gen" >&2
         done
-        prompt KEYMAP "Console keymap" "${KEYMAP}"
+        hint "e.g. us, uk, de or dvorak; all of them: localectl list-keymaps"
+        while prompt KEYMAP "Console keymap" "${KEYMAP}"; do
+            keymap_exists "${KEYMAP}" && break
+            echo "  no such keymap in /usr/share/kbd/keymaps" >&2
+        done
         prompt ADMIN_NOPASSWD "Passwordless sudo for ${ADMIN}? (yes/no)" "${ADMIN_NOPASSWD}"
         [[ ${ADMIN_NOPASSWD} == y* ]] && ADMIN_NOPASSWD=yes || ADMIN_NOPASSWD=no
     fi
@@ -1409,7 +1426,9 @@ cmd_status() {
         if layout_mounted; then
             disk=✓; next=install
             if [[ -d ${TARGET}/home/${ADMIN}/arch ]]; then
-                install=✓; next=check
+                # Installed already: the only step left is the reboot,
+                # which checks before it acts.
+                install=✓; next=reboot
             fi
         fi
     fi
@@ -1421,9 +1440,23 @@ cmd_status() {
     echo "    setup check     the pre-flight check"
     echo "    setup reboot    check, unmount and reboot"
     echo
-    if [[ -t 0 ]] && confirm "Run 'setup ${next}' now?"; then
-        "cmd_${next}"
-    fi
+    [[ -t 0 ]] || return 0
+    # Walk the remaining steps, asking before each, so a bare `setup` can
+    # carry a machine from nothing to a reboot without retyping commands.
+    # Declining stops here; so does a step that fails, rather than
+    # carrying a broken install forward.
+    #
+    # `check` is not in the chain: `install` already ends with one, and
+    # `reboot` runs it again before it acts, so including it here would
+    # print the same block three times.
+    local -a chain=(host disk install reboot)
+    local step started=0
+    for step in "${chain[@]}"; do
+        [[ ${step} == "${next}" ]] && started=1
+        ((started)) || continue
+        confirm "Run 'setup ${step}' now?" || return 0
+        "cmd_${step}" || return 1
+    done
 }
 
 usage() { sed -n '2,/^set -euo/p' "$0" | sed -e '/^set -euo/d' -e 's/^# \{0,1\}//'; }
