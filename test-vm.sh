@@ -275,8 +275,8 @@ check "/home is @home"            'findmnt -no SOURCE /home | grep -q "\[/@home\
 check "swap is on"                'swapon --show=NAME --noheadings | grep -qx /swap/swapfile'
 check "admin has passwordless sudo" 'sudo -n true'
 check "user exists, not in wheel" 'id user && ! id -nG user | grep -qw wheel'
-check "root cannot ssh"           'sudo -n sshd -T | grep -qx "permitrootlogin no"'
-check "passwords are refused"     'sudo -n sshd -T | grep -qx "passwordauthentication no"'
+check "root cannot ssh"           'sudo -n sshd -T | grep -qix "permitrootlogin no"'
+check "passwords are refused"     'sudo -n sshd -T | grep -qix "passwordauthentication no"'
 check "host repo is admin's"      '[ "$(stat -c %U ~/arch/host.env)" = admin ]'
 check "no failed units"           '[ -z "$(systemctl --failed --no-legend)" ]'
 systemctl --failed --no-legend

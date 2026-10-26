@@ -1165,3 +1165,10 @@ they need an Arch live system.
    there. It now also looks next to the resolved binary (qemu's store
    path, which has edk2-x86_64-code.fd), and FW_CODE/FW_VARS name the
    firmware files directly when they are elsewhere.
+ * The first full run on Apple Silicon installed, rebooted and logged
+   in as admin (10m31s under TCG), then failed two checks: "root cannot
+   ssh" and "passwords are refused". The system was right, the test was
+   not: OpenSSH 10.6's `sshd -T` prints keywords in their configuration
+   case (`PermitRootLogin no`), where older versions printed them in
+   lower case, and the test grepped for `permitrootlogin no` exactly.
+   It now matches without regard to case (`grep -qix`).
