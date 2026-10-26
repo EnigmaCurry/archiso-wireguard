@@ -1153,3 +1153,10 @@ they need an Arch live system.
  * `just build` failed at once with "./build.sh: Permission denied":
    "Add setup" had committed `build.sh` as 100644, dropping its
    executable bit. Restored to 100755.
+ * `just test-vm` then failed provisioning the test stick: "Public
+   keyring not found ... required key missing from keyring". On arm64
+   `provision.sh` runs in the imported Arch Linux ARM image, which has
+   no pacman keyring until someone runs `pacman-key --init`; build.sh
+   and inspect.sh do, provision.sh did not (it was only ever run on
+   amd64, where the official image ships one). It now initializes and
+   populates the keyring first, as inspect.sh does.

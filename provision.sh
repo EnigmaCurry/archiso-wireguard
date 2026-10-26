@@ -202,6 +202,10 @@ fat_offset() {
 # Container side. mtools writes into the FAT filesystem in place.
 provision_in_container() {
     local offset img src rel dir
+    # The imported Arch Linux ARM image has no pacman keyring yet.
+    if [[ $(uname -m) == aarch64 ]]; then
+        { pacman-key --init && pacman-key --populate archlinuxarm; } >/dev/null 2>&1
+    fi
     # pacman's download sandbox doesn't work in an unprivileged
     # Arch Linux ARM container; this one is thrown away anyway.
     pacman -Sy --noconfirm --needed --disable-sandbox mtools >/dev/null
