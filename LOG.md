@@ -1813,3 +1813,19 @@ passphrases and interactive `passwd` are read from the tty, not stdout;
 only paths are traced for the WiFi PSKs. Verified on an installed
 system: zero matches for private keys or password hashes, and the three
 `chpasswd` lines are the deliberate traces.
+
+## The reboot asks the other way round (2026-10-26)
+
+`confirm` took a default, always yes, so Enter at the end of a chained
+install rebooted the machine. Wanting to look at something first is the
+normal case there, and it is the one step that cannot be taken back
+from the live system, so it now reads `(y/N)` and Enter declines:
+
+    the install is done and checked; reboot when you are ready
+    ? Run 'setup reboot' now? (y/N):
+
+Both reboot prompts changed -- the chain's and `cmd_reboot`'s own
+"Unmount /mnt and reboot?" -- while `Install?` and the step prompts
+before it keep their yes default. `--yes` still short-circuits before
+either branch, which `just test-vm` depends on; checked, and the
+unattended run still reboots and boots the installed disk.

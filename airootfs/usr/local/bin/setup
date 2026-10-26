@@ -181,11 +181,19 @@ review() {
     echo
 }
 
+# confirm QUESTION [DEFAULT]
+# DEFAULT is y unless given as n, in which case Enter means no and only
+# an explicit yes goes ahead. For steps worth stopping at.
 confirm() {
     local answer
     ((YES)) && return 0
-    read -rp "? $1 (Y/n): " answer
-    [[ -z ${answer} || ${answer} == [yY]* ]]
+    if [[ ${2:-y} == n ]]; then
+        read -rp "? $1 (y/N): " answer
+        [[ ${answer} == [yY]* ]]
+    else
+        read -rp "? $1 (Y/n): " answer
+        [[ -z ${answer} || ${answer} == [yY]* ]]
+    fi
 }
 
 # A console keymap exists if kbd ships a .map.gz for it. Checked against
@@ -1496,7 +1504,7 @@ cmd_check() {
 
 cmd_reboot() {
     cmd_check || die "not rebooting: fix the failed checks first"
-    confirm "Unmount ${TARGET} and reboot?" || return 0
+    confirm "Unmount ${TARGET} and reboot?" n || return 0
     if [[ ${SWAP_SIZE} != 0 ]] && swapon --show=NAME --noheadings | grep -qx "${TARGET}/swap/swapfile"; then
         run swapoff "${TARGET}/swap/swapfile"
     fi
@@ -1544,7 +1552,14 @@ cmd_status() {
     for step in "${chain[@]}"; do
         [[ ${step} == "${next}" ]] && started=1
         ((started)) || continue
-        confirm "Run 'setup ${step}' now?" || return 0
+        # Nothing after the reboot is undoable from here, and wanting a
+        # look around first is the normal case, so Enter declines it.
+        if [[ ${step} == reboot ]]; then
+            hint "the install is done and checked; reboot when you are ready"
+            confirm "Run 'setup ${step}' now?" n || return 0
+        else
+            confirm "Run 'setup ${step}' now?" || return 0
+        fi
         "cmd_${step}" || return 1
     done
 }
