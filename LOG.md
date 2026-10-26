@@ -1373,3 +1373,28 @@ user's environment comes from Nix with Home Manager and sway-home.
    `setup check` reports the LUKS command line it booted:
    `✓ boot  systemd-boot, entries/arch.conf: rd.luks.name=<uuid>=cryptroot`.
    Encrypted boot on real hardware, and on the Pi 5, is still untested.
+
+## Booting a snapper snapshot from systemd-boot (2026-10-26)
+
+ * Tried in the test VM, on a `KEEP=1` disk, to settle what the book
+   could honestly say. A loader entry that is the ordinary `arch.conf`
+   with `rootflags=subvol=@snapshots/1/snapshot ro` boots, and
+   `bootctl set-oneshot snapshot-1.conf` uses it exactly once: the next
+   boot is `/@` again with no failed units and nothing to undo.
+ * In the snapshot, `findmnt -no SOURCE /` is
+   `/dev/vda2[/@snapshots/1/snapshot]` and SSH works. `pacman -Q`
+   answers from the snapshot's database, and `snapper list` marks the
+   booted snapshot with `-`.
+ * The read-only part is the subvolume, not the mount. `btrfs property
+   get -ts .../snapshot` says `ro=true`; `findmnt` reports `rw` anyway
+   and writes still fail. Six units failed in the snapshot boot, all of
+   them pacman's gnupg sockets (`gpg-agent@etc-pacman.d-gnupg.socket`
+   and friends), which want sockets under `/etc/pacman.d/gnupg`.
+   `@home`, `@log`, `@pkg` and `@nix` are outside the snapshot and stay
+   writable, so a snapshot boot has today's home directory.
+ * So it is good for looking, not repairing: `snapper undochange` cannot
+   write into a read-only root, and the kernel/initramfs still come from
+   the ESP, which no snapshot covers. The repair path stays what the
+   book already had -- boot the stick, `setup disk --mount`, and
+   `arch-chroot /mnt snapper --no-dbus undochange`.
+ * Reading the ESP needs sudo at all: it is mounted `fmask=0077`.
