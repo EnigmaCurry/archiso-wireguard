@@ -98,14 +98,14 @@ review() {
 confirm() {
     local answer
     ((YES)) && return 0
-    read -rp "? $1 (Y/n) " answer
+    read -rp "? $1 (Y/n): " answer
     [[ -z ${answer} || ${answer} == [yY]* ]]
 }
 
 # prompt VAR "Question" default
 prompt() {
     local __var=$1 question=$2 default=${3:-} answer
-    read -rep "? ${question} " -i "${default}" answer
+    read -rep "? ${question}: " -i "${default}" answer
     printf -v "${__var}" '%s' "${answer}"
 }
 
@@ -755,7 +755,7 @@ pick_disk() {
         [[ -n ${current} && $(realpath "${current}" 2>/dev/null) == "${name}" ]] && choice=$((i + 1))
     done
     while :; do
-        read -rep "? Number (${choice}) " -i "" i
+        read -rep "? Number (${choice}): " -i "" i
         i=${i:-${choice}}
         [[ ${i} =~ ^[0-9]+$ ]] && ((i >= 1 && i <= ${#disks[@]})) && break
         echo "  pick 1 to ${#disks[@]}" >&2
