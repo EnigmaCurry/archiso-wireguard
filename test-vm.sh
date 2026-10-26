@@ -202,7 +202,7 @@ wait_exit() {
 desktop() {
     phase "Desktop: add desktop/ to the host repo and apply"
     # COPYFILE_DISABLE: no macOS ._ files in the archive.
-    COPYFILE_DISABLE=1 tar --no-xattrs -C "${ROOT}/desktop" -cf - etc | vm admin@127.0.0.1 'tar -C ~/arch -xf -'
+    COPYFILE_DISABLE=1 tar --no-xattrs --exclude .DS_Store -C "${ROOT}/desktop" -cf - etc | vm admin@127.0.0.1 'tar -C ~/arch -xf -'
     vm admin@127.0.0.1 'cat >>~/arch/packages.txt' <"${ROOT}/desktop/packages.txt"
     vm admin@127.0.0.1 'cat >>~/arch/units.txt' <"${ROOT}/desktop/units.txt"
     vm admin@127.0.0.1 'git -C ~/arch add -A && git -C ~/arch -c user.name=test -c user.email=test@setuptest commit -qm Desktop'

@@ -4,3 +4,4 @@
 /out/
 # test-vm.sh's work directory
 /test/
+.DS_Store
