@@ -1,0 +1,17 @@
+[Unit]
+Description=Size the live system's writable overlay to this machine
+Documentation=https://github.com/EnigmaCurry/boomstick
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target sysinit.target
+# Before anything that writes into the overlay, so the room is there
+# when it is needed rather than after the fact.
+Before=boomstick-config.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/boomstick-cowspace
+
+[Install]
+WantedBy=sysinit.target

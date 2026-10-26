@@ -131,6 +131,7 @@ file_permissions["/usr/local/bin/boomstick-webhook"]="0:0:755"
 file_permissions["/usr/local/bin/boomstick-config"]="0:0:755"
 file_permissions["/usr/local/bin/boomstick-motd"]="0:0:755"
 file_permissions["/usr/local/bin/setup"]="0:0:755"
+file_permissions["/usr/local/bin/boomstick-cowspace"]="0:0:755"
 EOF
 }
 
@@ -181,6 +182,7 @@ file_permissions["/usr/local/bin/boomstick-webhook"]="0:0:755"
 file_permissions["/usr/local/bin/boomstick-config"]="0:0:755"
 file_permissions["/usr/local/bin/boomstick-motd"]="0:0:755"
 file_permissions["/usr/local/bin/setup"]="0:0:755"
+file_permissions["/usr/local/bin/boomstick-cowspace"]="0:0:755"
 EOF
 }
 

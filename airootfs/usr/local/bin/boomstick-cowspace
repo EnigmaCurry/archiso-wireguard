@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Size the live system's writable overlay to the machine it booted on.
+#
+# archiso gives the overlay -- a tmpfs at /run/archiso/cowspace, holding
+# the upperdir of the overlayfs mounted at / -- a fixed 256M. That is
+# roughly right on a 1 GiB Pi and far too little on a 16 GiB desktop,
+# where it cannot hold a `pacman -Syu` or an AUR build. The right size
+# cannot be chosen when the image is built, because an image does not
+# know what it will boot on; cow_spacesize= on the kernel command line
+# would have to be guessed per machine. A tmpfs can be resized once the
+# machine is known, so that is what this does.
+#
+# Half of RAM, which is tmpfs's own default, and never below archiso's
+# 256M. A cow_spacesize= given on the kernel command line wins: someone
+# who asked for a size meant it.
+#
+# Nothing here persists. The overlay is RAM, so a bigger one buys room
+# for this session only -- see the book on what a stick keeps.
+set -euo pipefail
+
+COWSPACE=${COWSPACE:-/run/archiso/cowspace}
+# archiso's own default, and our floor: never shrink a live system.
+FLOOR_KB=$((256 * 1024))
+
+msg()  { echo "cowspace: $*"; }
+warn() { echo "WARNING: cowspace: $*" >&2; }
+
+main() {
+    local fstype mem_kb want_kb now_b now_kb
+
+    fstype=$(findmnt -no FSTYPE "${COWSPACE}" 2>/dev/null) || fstype=
+    if [[ ${fstype} != tmpfs ]]; then
+        msg "no tmpfs at ${COWSPACE}: not a live system, nothing to resize"
+        return 0
+    fi
+    if grep -qE '(^| )cow_spacesize=' /proc/cmdline; then
+        msg "cow_spacesize= was given on the kernel command line, left alone"
+        return 0
+    fi
+
+    mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+    want_kb=$((mem_kb / 2))
+    ((want_kb < FLOOR_KB)) && want_kb=${FLOOR_KB}
+
+    now_b=$(findmnt -no SIZE -b "${COWSPACE}")
+    now_kb=$((now_b / 1024))
+    if ((want_kb <= now_kb)); then
+        msg "$((now_kb / 1024))M already covers half of $((mem_kb / 1024))M RAM, left alone"
+        return 0
+    fi
+
+    # A tmpfs size is a ceiling, not a reservation: nothing is taken from
+    # the machine until something writes, which is why half of RAM is a
+    # safe default even on a small board.
+    if mount -o "remount,size=${want_kb}k" "${COWSPACE}"; then
+        msg "$((now_kb / 1024))M -> $((want_kb / 1024))M (half of $((mem_kb / 1024))M RAM)"
+    else
+        warn "could not resize ${COWSPACE}, staying at $((now_kb / 1024))M"
+    fi
+}
+
+main "$@"

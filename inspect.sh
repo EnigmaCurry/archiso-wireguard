@@ -35,10 +35,13 @@ OVERLAY_PATHS=(
     usr/local/bin/boomstick-webhook
     usr/local/bin/boomstick-motd
     usr/local/bin/setup
+    usr/local/bin/boomstick-cowspace
     etc/systemd/system/boomstick-config.service
     etc/systemd/system/sysinit.target.wants/boomstick-config.service
     etc/systemd/system/boomstick-motd.service
     etc/systemd/system/sysinit.target.wants/boomstick-motd.service
+    etc/systemd/system/boomstick-cowspace.service
+    etc/systemd/system/sysinit.target.wants/boomstick-cowspace.service
     etc/systemd/system/boomstick-webhook.service
     etc/systemd/system/multi-user.target.wants/boomstick-webhook.service
     'etc/systemd/system/multi-user.target.wants/wg-quick@*'

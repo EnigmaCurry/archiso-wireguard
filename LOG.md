@@ -1643,3 +1643,39 @@ resolve on aarch64, and mkinitcpio then prints its blanket warning. The
 initramfs is fine: the previous hybrid was built by this same path and
 booted a Pi 5. Dropping the `memdisk` hook from the aarch64 profile
 would quiet it, and has not been done.
+
+## The overlay is sized to the machine, not the image (2026-10-26)
+
+archiso gives the live system's writable overlay -- a tmpfs at
+/run/archiso/cowspace, holding the upperdir of the overlayfs at / -- a
+fixed 256M. Measured on a booted Pi 500: 256M total, 244.6M free, with
+14 GiB of RAM idle. That is not enough to run `pacman -Syu` or build an
+AUR package, which is the real answer to "can a stick be upgraded in
+place": not "the changes are ephemeral" (though they are) but "they do
+not fit".
+
+`cow_spacesize=` on the kernel command line sets it, but the right
+value cannot be chosen when the image is built, because an image does
+not know what it will boot on -- and the same stick is meant to boot a
+1 GiB Pi and a 16 GiB desktop. A tmpfs can be resized once the machine
+is known, so `boomstick-cowspace` does that at boot: half of RAM, which
+is tmpfs's own default, floored at archiso's 256M so a live system is
+never shrunk. An explicit `cow_spacesize=` wins.
+
+A tmpfs size is a ceiling, not a reservation -- nothing is taken until
+something writes -- which is what makes half of RAM safe on a small
+board.
+
+Verified on the Pi 500 before writing the unit, and then with it:
+
+    16216M RAM -> 256M -> 8108M, and a 400 MiB write through / succeeded
+    second run -> "already covers half of RAM, left alone" (idempotent)
+    1 GiB      -> 512M
+    512 MiB    -> 256M (floor applies)
+    not a live system -> "no tmpfs ..., nothing to resize", exit 0
+
+Ordered before boomstick-config, so the room exists before anything
+writes. Shipped in bin/, so once an image carries the generalised
+boomstick-config a fix to it needs no rebuild. None of this persists:
+the overlay is RAM either way. Persistence would mean cow_device= on a
+second, non-FAT partition, which this layout does not have.
