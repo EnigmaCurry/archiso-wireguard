@@ -248,7 +248,10 @@ exit $fail
 EOF
 
     phase "Desktop: sway-home for user (Home Manager)"
-    # As the book does it: a shell as user from admin's, then hm-install.
+    # As the book does it: hm-install in user's own systemd user manager,
+    # which has a session bus. (Under a bare 'sudo -iu user' there is none,
+    # and home-manager's dconf step starts Nix's dbus-daemon, which looks
+    # for /etc/dbus-1/session.conf: Arch keeps it under /usr/share.)
     # hm-install asks for git's name and email unless this file exists.
     local src ref=${SWAY_HOME_REF}
     if [[ -n ${SWAY_HOME_DIR} ]]; then
@@ -261,8 +264,12 @@ EOF
         src=${SWAY_HOME_URL}
         ref=${ref:-master}
     fi
-    vm admin@127.0.0.1 sudo -n -iu user bash -s <<EOF
+    # shellcheck disable=SC2016 # expanded on the VM
+    vm admin@127.0.0.1 'sudo -n systemctl start "user@$(id -u user).service"'
+    vm admin@127.0.0.1 sudo -n systemd-run --machine=user@.host --user --pipe --wait --quiet --collect \
+        -- bash -l -s <<EOF
 set -euo pipefail
+cd
 git clone --quiet --branch '${ref}' '${src}' ~/git/vendor/enigmacurry/sway-home
 mkdir -p ~/.config/git
 printf '[user]\n\tname = setup test\n\temail = user@setuptest\n' >~/.config/git/config.local

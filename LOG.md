@@ -1324,3 +1324,11 @@ user's environment comes from Nix with Home Manager and sway-home.
    anyone: its git-prompt.sh input followed git's master branch, and
    the narHash in its lock went stale when git changed the file.
    sway-home's `arch` branch pins it to v2.56.0 (the locked content).
+ * The first run of it (on a Linux host, with KVM, in 4m34s) failed in
+   `hm-install`: "Failed to open /etc/dbus-1/session.conf". test-vm
+   ran it under `sudo -iu user`, a shell without a session bus, so
+   Home Manager's dconf step started Nix's own dbus-daemon, which looks
+   for its configuration in /etc/dbus-1 (NixOS) rather than
+   /usr/share/dbus-1 (Arch). test-vm now runs it in `user`'s systemd
+   user manager (`systemd-run --machine=user@.host --user`), which has
+   a bus; the book's page uses `sudo machinectl shell user@`.
