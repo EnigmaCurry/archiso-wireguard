@@ -510,7 +510,9 @@ mount_layout() {
             run mount -o "${MOUNT_OPTS},subvol=${sv}" "${ROOTDEV}" "${TARGET}${dir}"
         fi
     done
-    run mount "${ESP}" "${TARGET}/boot"
+    # Only root may read the ESP: bootctl refuses to trust a random seed
+    # on a world-readable /boot ("a security hole"). genfstab keeps it.
+    run mount -o fmask=0077,dmask=0077 "${ESP}" "${TARGET}/boot"
 }
 
 swap_on() {

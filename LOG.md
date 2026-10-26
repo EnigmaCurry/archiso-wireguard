@@ -1179,3 +1179,15 @@ they need an Arch live system.
    (read-only) copy a KEEP=1 run left behind. The other copies are
    fine: the stick image comes from out/, and the firmware code file
    is opened read-only.
+ * The installed system's boot log warned: "Mount point '/boot' which
+   backs the random seed file is world accessible, which is a security
+   hole!" `setup disk` mounted the ESP with vfat's default masks
+   (everything 0755) and genfstab kept that. It now mounts it with
+   `fmask=0077,dmask=0077`, and genfstab carries
+   that into fstab.
+ * One run's installed system did not answer SSH within 15 minutes
+   (the runs before and after answered in about 30 seconds). Its
+   journal was empty, so it stopped before the root filesystem was
+   mounted: firmware, kernel or initramfs. Booted again with
+   `console=ttyS0`, the same disk came up in 25 seconds. Taken for a
+   TCG hiccup; not reproduced since.
