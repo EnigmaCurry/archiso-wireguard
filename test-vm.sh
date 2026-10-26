@@ -379,7 +379,7 @@ main() {
     mkdir -p "${WORK}/secrets/ssh"
     cp "${WORK}/id_ed25519.pub" "${WORK}/secrets/ssh/authorized_keys"
     clone "${image}" "${WORK}/stick.img"
-    if ! BOOMSTICK_SECRETS="${WORK}/secrets" "${ROOT}/provision.sh" "${WORK}/stick.img" \
+    if ! BOOMSTICK_SECRETS="${WORK}/secrets" "${ROOT}/provision.sh" --test-image "${WORK}/stick.img" \
         >"${WORK}/provision.log" 2>&1; then
         cat "${WORK}/provision.log" >&2
         die "provisioning the test stick failed"

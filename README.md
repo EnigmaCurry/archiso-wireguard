@@ -609,7 +609,7 @@ without a rebuild.
 | `just build-usb` | Build one image for x86_64 (UEFI) and the Pi 5 into `out/` (needs both architectures) |
 | `just config` | Create missing config files under `secrets/` as commented-out templates |
 | `just keygen` | Generate a WireGuard key pair for a stick (in a Podman container) |
-| `just provision [TARGET]` | Check `secrets/` and copy it onto a stick, device or image |
+| `just provision [TARGET]` | Check `secrets/` and copy it onto a stick (a mounted config partition or a `/dev` node) |
 | `just test-vm [IMAGE]` | Install with `setup` into a QEMU VM (x86_64, UEFI), unattended, then boot it and check it |
 | `just inspect [IMAGE]` | List an image's overlay files and check it contains no secrets |
 | `just clean` | Remove the cached pacman packages volumes |
@@ -621,10 +621,11 @@ of the WiFi networks it contained. The next stick should get a new
 WireGuard key (`just keygen`); its SSH host keys are new anyway, since
 they are generated per stick on first boot.
 
-The built image itself is generic and holds nothing worth protecting:
-`just inspect` fails if a secret ever ends up inside one, and tells you
-if the image's config partition has been filled in (which makes that
-image a secret too, so don't publish a provisioned one).
+The built image itself is generic and holds nothing worth protecting,
+and stays that way: `just provision` writes to a stick, never to an
+image, and refuses a file target for that reason. An image is a thing
+that gets copied, shared and forgotten about; a stick is not.
+`just inspect` fails if a secret ever ends up inside an image.
 
 ## How it works
 

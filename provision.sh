@@ -8,15 +8,21 @@
 #   <directory>    an already-mounted config partition, e.g.
 #                  /run/media/you/BOOMSTICK
 #   /dev/sdX       a stick (or /dev/sdX1, its FAT partition), unmounted
-#   <image>.img    a built image, before it is written to a stick. The
-#                  image then contains your secrets and is no longer
-#                  the generic thing it was built as.
+#
+# Images in out/ are built generic and stay that way: there is
+# deliberately no way to write your secrets into one. An image is a
+# file that gets copied, shared and forgotten about, and a stick is
+# not; the secrets belong only on the stick.
+#
+# --test-image FILE is the one exception, for test-vm.sh, which writes
+# a throwaway key into a throwaway copy of an image in test/ because a
+# VM has no stick to plug in. Do not aim it at out/.
 #
 # The files are checked first, with the same rules the build used to
 # apply, so a typo fails here instead of silently leaving a headless
 # machine unreachable.
 #
-# Images and devices are written with mtools inside a throwaway Podman
+# Devices (and --test-image) are written with mtools inside a throwaway Podman
 # container (no root, no loop device, nothing to mount); a directory is
 # written directly. Writing to a device node needs permission to open
 # it, so that usually means sudo.
@@ -34,6 +40,8 @@ FAT_LABEL=${FAT_LABEL:-BOOMSTICK}
 # Set when we mounted the stick ourselves, so we can unmount it again.
 MOUNTED_DEV=
 TARGET=
+# Set only by --test-image: test-vm.sh provisioning a copy in test/.
+TEST_IMAGE=
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 warn() { echo "WARNING: $*" >&2; }
@@ -164,7 +172,7 @@ host_image() {
     esac
 }
 
-# Target is an image file or a block device: mtools, in a container.
+# Target is a block device, or a --test-image file: mtools, in a container.
 provision_mtools() {
     local target=$1 mount_opt
     command -v podman >/dev/null || die "podman is not installed"
@@ -176,7 +184,7 @@ provision_mtools() {
         [[ -w ${target} ]] || die "no write permission on ${target} (try: sudo $0 ${target})"
         mount_opt=(--device "${target}:/target")
     else
-        [[ -f ${target} ]] || die "no such image, device or directory: ${target}"
+        [[ -f ${target} ]] || die "no such device or directory: ${target}"
         mount_opt=(--volume "${target}:/target")
     fi
     podman run --rm \
@@ -243,11 +251,22 @@ main() {
         provision_in_container
         return
     fi
+    if [[ ${target} == --test-image ]]; then
+        TEST_IMAGE=${2:?--test-image needs an image file}
+        target=${TEST_IMAGE}
+    fi
     check_config
     if [[ -n ${target} ]]; then
         TARGET=${target}
     else
         find_target
+    fi
+    # A plain file is an image. Provisioning one would bake the secrets
+    # into something built to be generic and shareable, so it takes the
+    # explicit test-only flag.
+    if [[ -z ${TEST_IMAGE} && ! -d ${TARGET} && ! -b ${TARGET} ]]; then
+        [[ -e ${TARGET} ]] || die "no such stick, device or directory: ${TARGET}"
+        die "${TARGET} is a file, not a stick. Write the image to a stick first (see README), then run this against the stick. Images are kept generic on purpose."
     fi
     echo "Target: ${TARGET#"${ROOT}"/}"
     if [[ -d ${TARGET} ]]; then
@@ -261,7 +280,7 @@ main() {
     else
         provision_mtools "${TARGET}"
         [[ -b ${TARGET} ]] && echo "Unplug the stick and boot it." \
-            || echo "This image is no longer generic: write it to a stick (and don't publish it)."
+            || echo "Wrote a throwaway ${CONFIG_DIR}/ into ${TARGET##*/} (--test-image)."
     fi
 }
 

@@ -1591,3 +1591,55 @@ Consequences, both of which bite before the next test:
     rather than running a new `setup` against an old one.
 
 Earlier entries in this log keep the old names as they were at the time.
+
+## provision writes to sticks, not images (2026-10-26)
+
+`provision.sh` used to accept a built image as a target, which meant
+`just provision out/...img` would bake the WireGuard key and SSH keys
+into the one artifact the whole design works to keep generic. An image
+is a file that gets copied, shared and forgotten about; a stick is not.
+So the documented targets are now the auto-found `BOOMSTICK` stick, a
+mounted config partition, or a `/dev` node, and a file target is
+refused outright.
+
+It could not simply be deleted: `test-vm.sh` has to write a throwaway
+key into a throwaway *copy* of an image in `test/`, because a VM has no
+stick to plug in. That is now an explicit `--test-image FILE`, named so
+it cannot be mistaken for a normal path, and the mtools-in-podman code
+it shares with real `/dev` nodes is unchanged. Verified: `just test-vm`
+passes (1m47s, 12/12) and prints "Wrote a throwaway boomstick/ into
+stick.img (--test-image)".
+
+## The rebranded hybrid image (2026-10-26)
+
+`boomstick-usb-2026.10.26-x86_64+rpi5.img`, the first hybrid built since
+the rename and since master merged in. Both halves carry
+`/usr/local/bin/setup` and the three `boomstick-*` helpers, both say
+"no secrets", and `IMAGE_ID` is `boomstick` / `boomstick-rpi5` so the
+login banner still names which half booted.
+
+The aarch64 half now has the two packages the previous stick was missing,
+which is why that stick needed `setup` copied in by hand and still could
+not make the host repo a git repository:
+
+    archlinuxarm-keyring 20240419-2   (master's fix, via the merge)
+    git 2.56.0-1                      (added by the same commit as setup)
+
+`ghostty-terminfo` is the only package Arch Linux ARM does not have, and
+it is skipped as designed.
+
+More build-log noise worth knowing, on top of the `fchownat` and
+`error: command failed to execute correctly` lines noted earlier: the
+aarch64 initramfs reports
+
+    WARNING: architecture 'aarch64' not supported, skipping hook
+    ERROR: module not found: 'phram'
+    ERROR: binary not found: 'memdiskfind'
+    WARNING: errors were encountered during the build. The image may not be complete.
+
+`phram` and `memdiskfind` belong to archiso's `memdisk` hook, which only
+exists for booting an ISO through syslinux MEMDISK on x86. They cannot
+resolve on aarch64, and mkinitcpio then prints its blanket warning. The
+initramfs is fine: the previous hybrid was built by this same path and
+booted a Pi 5. Dropping the `memdisk` hook from the aarch64 profile
+would quiet it, and has not been done.
