@@ -475,6 +475,9 @@ check "/home is @home"            'findmnt -no SOURCE /home | grep -q "\[/@home\
 check "swap is on"                'swapon --show=NAME --noheadings | grep -qx /swap/swapfile'
 check "admin has passwordless sudo" 'sudo -n true'
 check "root is locked"            'sudo -n passwd -S root | awk "{exit !(\$2 == \"L\")}"'
+# The daily user starts with the administrator's keys, so you can log
+# in as yourself on the first boot.
+check "${DAILY} has admin's keys"  'sudo -n cmp -s ~admin/.ssh/authorized_keys "$(getent passwd "${DAILY}" | cut -d: -f6)/.ssh/authorized_keys"'
 check "${DAILY} exists, not in wheel" 'id "${DAILY}" && ! id -nG "${DAILY}" | grep -qw wheel'
 check "root cannot ssh"           'sudo -n sshd -T | grep -qix "permitrootlogin no"'
 check "passwords are refused"     'sudo -n sshd -T | grep -qix "passwordauthentication no"'

@@ -1347,18 +1347,37 @@ live_side() {
     ((n)) || msg "  no WiFi networks on this stick to copy (wired only)"
 }
 
+# The repo's authorized_keys into one account's ~/.ssh.
+install_authorized_keys() {
+    local u=$1
+    in_target install -d -m 0700 -o "${u}" -g "${u}" "/home/${u}/.ssh"
+    run install -m 0600 "${HOST_REPO}/authorized_keys" "${TARGET}/home/${u}/.ssh/authorized_keys"
+    in_target chown "${u}:${u}" "/home/${u}/.ssh/authorized_keys"
+}
+
 create_accounts() {
+    local daily_keys=${TARGET}/home/${DAILY}/.ssh/authorized_keys
     ask_target id "${ADMIN}" >/dev/null 2>&1 \
         || in_target useradd -m -u 1000 -G wheel -c "Administrator" "${ADMIN}"
     ask_target id "${DAILY}" >/dev/null 2>&1 \
         || in_target useradd -m -c "Daily driver" "${DAILY}"
     in_target visudo -c
-    if [[ -s ${HOST_REPO}/authorized_keys ]]; then
-        in_target install -d -m 0700 -o "${ADMIN}" -g "${ADMIN}" "/home/${ADMIN}/.ssh"
-        run install -m 0600 "${HOST_REPO}/authorized_keys" "${TARGET}/home/${ADMIN}/.ssh/authorized_keys"
-        in_target chown "${ADMIN}:${ADMIN}" "/home/${ADMIN}/.ssh/authorized_keys"
-    else
+    if [[ ! -s ${HOST_REPO}/authorized_keys ]]; then
         warn "no authorized_keys in ${HOST_REPO}: ${ADMIN} will not be able to log in over SSH"
+        return 0
+    fi
+    # ${ADMIN}'s keys come from the repo every time: the repo says who
+    # may administer this machine, and that is the whole idea.
+    install_authorized_keys "${ADMIN}"
+    # The daily user starts with the same keys, so you can log straight
+    # in as yourself rather than as the administrator. Seeded once and
+    # then theirs: a re-run leaves an existing file alone, so a key
+    # added by hand on the machine is not quietly reverted.
+    if [[ -e ${daily_keys} ]]; then
+        msg "  ${DAILY}: authorized_keys already there, left alone"
+    else
+        install_authorized_keys "${DAILY}"
+        msg "  ${DAILY}: seeded with the same keys as ${ADMIN}"
     fi
 }
 
@@ -1652,7 +1671,7 @@ cmd_wireguard() {
 
 # Print one line per check; return non-zero if any failed.
 cmd_check() {
-    local failed=0 n dups units u state states=() keys out pw
+    local failed=0 n dups units u state states=() keys dkeys out pw
     load_host
     section "Check"
     if ! layout_mounted; then
@@ -1737,13 +1756,14 @@ cmd_check() {
     fi
 
     keys=$(key_count "${TARGET}/home/${ADMIN}/.ssh/authorized_keys")
+    dkeys=$(key_count "${TARGET}/home/${DAILY}/.ssh/authorized_keys")
     # No host keys yet is expected (they are made on first boot), and
     # sshd only looks for them after the config has parsed.
     out=$(ask_target sshd -t 2>&1) || true
     if ((keys > 0)) \
         && [[ $(ask_target stat -c %U:%a "/home/${ADMIN}/.ssh/authorized_keys" 2>/dev/null) == "${ADMIN}:600" ]] \
         && [[ -z ${out} || ${out} == *"no hostkeys available"* ]]; then
-        ok ssh "${keys} key(s) for ${ADMIN}, sshd config parses"
+        ok ssh "${keys} key(s) for ${ADMIN}, ${dkeys} for ${DAILY}, sshd config parses"
     else
         bad ssh "${keys} key(s) for ${ADMIN}; check ownership/mode and 'sshd -t'"; failed=1
     fi

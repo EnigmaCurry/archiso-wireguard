@@ -2040,3 +2040,20 @@ ahead, and a piped answer swallows the paste behind it.
 Verified on the Pi 500: instructions visible, a config without DNS
 accepted, the key written 0600, the package installed, the unit
 enabled, the repo committed, and a second run idempotent.
+
+## The daily user starts with admin's keys (2026-10-26)
+
+`create_accounts` installed `authorized_keys` for `admin` only, and the
+book told you to copy it across yourself. It seeds the daily user with
+the same keys now, so the first thing done on a new machine can be
+logging in as yourself rather than as its administrator.
+
+The two are deliberately not managed alike. `admin`'s keys are
+installed from the repo on every run -- the repo is what says who may
+administer the machine, and that is the point of it. The daily user's
+are seeded once and then left alone, because a key added there by hand
+belongs to that user and a re-run reverting it would be a nasty
+surprise. `setup check` reports both counts and still only requires
+`admin` to have one.
+
+`just test-vm` compares the two files: 14 checks, 1m45s.
