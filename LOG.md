@@ -1963,3 +1963,80 @@ systemd-resolvconf, units.txt gained wg-quick@wg0, the ignore rule was
 added, the repo was committed -- and the generated key appears zero
 times in the install log, zero times anywhere in the host repo, and
 zero times in git's objects. just test-vm still passes (1m48s, 12/12).
+
+## root is locked, not asked for (2026-10-26)
+
+`setup install` asked for three passwords. Nothing needs to log in as
+root: `admin` is in wheel, sudo is how administration happens, and sshd
+refuses root regardless. A password nobody uses is a password nobody
+rotates, so root is locked (`usermod -p '!'`) and only `admin` and the
+daily user are asked for. An existing root password is left alone, so a
+re-run cannot undo one set on purpose.
+
+`setup check` wants `root=L` now, accepts `P` for anyone who set one
+deliberately, and fails on `NP` -- a root account with no password at
+all. That check needed its own flag: `failed` is cumulative across
+every check above it, so testing it would have blamed the passwords for
+an earlier failure.
+
+The cost is the local emergency console: `sulogin` will not open a shell
+for a locked root, so a machine that will not boot is recovered from the
+stick rather than its own keyboard. That is the rescue path this book
+documents anyway.
+
+`just test-vm` sends no root line any more and asserts `root=L`:
+13 checks, 1m48s.
+
+## The installed Pi could not install anything (2026-10-26)
+
+Found while testing `setup wireguard` on real hardware, and much worse
+than the thing being tested. The installed machine's repos are Arch
+Linux ARM's -- `[core] [extra] [alarm] [aur]`, all signed by their
+build key -- and `base_packages` never gave it `archlinuxarm-keyring`.
+So on the installed Pi:
+
+    error: wireguard-tools: signature from "Arch Linux ARM Build
+           System <builder@archlinuxarm.org>" is unknown trust
+
+Every `pacman -S` and every `admin upgrade` on an installed Pi would
+have failed that way, and it cannot bootstrap out of it: the keyring is
+signed by the key it carries. This is exactly the trap 74c1a05 fixed
+for the live image, one layer down, and nobody had looked for it there.
+`pacstrap` installs it now, while the live system's keyring is still
+doing the verifying.
+
+Repairing a machine already installed without it needs the key signed
+by hand in the target first, since nothing it can download will verify:
+
+    cp -a /usr/share/pacman/keyrings/archlinuxarm* /mnt/usr/share/pacman/keyrings/
+    arch-chroot /mnt pacman-key --populate archlinuxarm
+    arch-chroot /mnt pacman-key --lsign-key 68B3537F39A313B3E574D06777193F152BDBE6A6
+    rm -f /mnt/usr/share/pacman/keyrings/archlinuxarm*   # let pacman own them
+    arch-chroot /mnt pacman -S archlinuxarm-keyring
+
+## Three set -e traps in setup wireguard (2026-10-26)
+
+All three were invisible in the VM, which is a lesson about the test
+rather than about bash. The VM run piped its answers and its config had
+a `DNS =` line, and it was always a first run.
+
+ * `read_pasted` printed its instructions to *stdout* while being
+   called as `conf=$(read_pasted ...)`, so the instructions went into
+   the variable and the terminal sat silent. Piped input never noticed.
+   They go to stderr now, with a marked block saying what to do, and
+   the real report was "it was not clear that it was waiting for me".
+ * `wg_field` is a pipeline, and a missing field makes `grep` exit 1.
+   Under `set -o pipefail` that failed the assignment and `set -e` ended
+   the run -- silently, after writing nothing. A config with no `DNS`
+   line, which is most of them, killed it. The VM config had one.
+ * `repo_add` returned 1 for "already there", which made every bare
+   call a landmine on the second run. It always succeeds now and says
+   which of the two happened.
+
+`--genkey` and `--paste` answer the first question up front, which also
+makes the step scriptable: `prompt` uses readline, readline buffers
+ahead, and a piped answer swallows the paste behind it.
+
+Verified on the Pi 500: instructions visible, a config without DNS
+accepted, the key written 0600, the package installed, the unit
+enabled, the repo committed, and a second run idempotent.

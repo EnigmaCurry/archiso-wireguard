@@ -410,7 +410,8 @@ LOCALE=en_US.UTF-8
 KEYMAP=us
 ADMIN_NOPASSWD=yes
 EOF
-    printf 'root:%s\nadmin:%s\n%s:%s\n' "${PASSWORD}" "${PASSWORD}" "${DAILY}" "${PASSWORD}" >"${WORK}/passwords"
+    # No root line: setup locks root and never asks for it.
+    printf 'admin:%s\n%s:%s\n' "${PASSWORD}" "${DAILY}" "${PASSWORD}" >"${WORK}/passwords"
 
     phase "Boot the stick"
     boot_vm "${WORK}/serial-live.log" \
@@ -473,6 +474,7 @@ check "/ is the @ subvolume"      'findmnt -no SOURCE / | grep -q "\[/@\]$"'
 check "/home is @home"            'findmnt -no SOURCE /home | grep -q "\[/@home\]$"'
 check "swap is on"                'swapon --show=NAME --noheadings | grep -qx /swap/swapfile'
 check "admin has passwordless sudo" 'sudo -n true'
+check "root is locked"            'sudo -n passwd -S root | awk "{exit !(\$2 == \"L\")}"'
 check "${DAILY} exists, not in wheel" 'id "${DAILY}" && ! id -nG "${DAILY}" | grep -qw wheel'
 check "root cannot ssh"           'sudo -n sshd -T | grep -qix "permitrootlogin no"'
 check "passwords are refused"     'sudo -n sshd -T | grep -qix "passwordauthentication no"'

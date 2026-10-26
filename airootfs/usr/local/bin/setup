@@ -16,9 +16,12 @@
 #                      accounts, SSH, then run the check. FILE holds
 #                      name:password lines (or name:$6$... hashes) for
 #                      root, admin and user, for an unattended install
-#   wireguard          give the installed system its own WireGuard tunnel:
-#                      generate a key (so the provider never sees it) or
-#                      paste a wg0.conf you already have
+#   wireguard [--genkey|--paste]
+#                      give the installed system its own WireGuard
+#                      tunnel: --genkey makes the key here, so the
+#                      provider never sees it, and --paste takes a
+#                      wg0.conf you already have. Without either it
+#                      asks.
 #   check              the pre-flight check for the system under /mnt
 #   reboot             check, unmount and reboot (refuses if a check fails)
 #
@@ -289,7 +292,17 @@ base_packages() {
             ;;
         aarch64)
             is_rpi5 || die "unrecognised aarch64 board: setup only knows the Raspberry Pi 5"
-            pkgs+=(linux-rpi-16k firmware-raspberrypi linux-firmware)
+            # archlinuxarm-keyring is load-bearing, exactly as it is for
+            # the live image. The installed machine's repos are Arch
+            # Linux ARM's -- core and extra included, not just alarm --
+            # and every package in them is signed by their build key.
+            # Without it the machine cannot install or upgrade anything:
+            # pacman rejects every package as "unknown trust", and it
+            # cannot bootstrap out of it either, because the keyring is
+            # signed by the key it carries. pacstrap installs it here,
+            # while the live system's keyring is still doing the
+            # verifying.
+            pkgs+=(archlinuxarm-keyring linux-rpi-16k firmware-raspberrypi linux-firmware)
             ;;
         *) die "unsupported architecture: $(arch)" ;;
     esac
@@ -302,13 +315,19 @@ repo_packages() {
     sed -e 's/#.*//' -e '/^\s*$/d' "${HOST_REPO}/packages.txt" | tr -s ' \n' '\n' | sed '/^$/d'
 }
 
-# Add a word to one of the host repo's lists, once. Returns 1 when it
-# was already there, so callers can report only what they changed.
+# Add a word to one of the host repo's lists, once, and say so when it
+# was actually added. Always succeeds: "it is already there" is not a
+# failure, and returning non-zero for it made every bare call a place
+# where 'set -e' would end the run on the second attempt.
 repo_add() {
     local file=${HOST_REPO}/$1 word=$2
-    [[ -f ${file} ]] || return 1
+    if [[ ! -f ${file} ]]; then
+        warn "no ${1} in ${HOST_REPO}: not adding ${word}"
+        return 0
+    fi
     if grep -qxF "${word}" <(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "${file}"); then
-        return 1
+        msg "  ${1}: ${word} already there"
+        return 0
     fi
     printf '%s\n' "${word}" >>"${file}"
     msg "  ${1}: added ${word}"
@@ -1348,9 +1367,30 @@ password_state() { { ask_target passwd -S "$1" 2>/dev/null || true; } | awk '{pr
 # The name:secret line for one account from PASSWORDS_FILE, or empty.
 password_line() { grep -m1 "^$1:" "${PASSWORDS_FILE}" 2>/dev/null || true; }
 
+# root is locked rather than given a password. Nothing needs to log in
+# as root: ${ADMIN} is in wheel and sudo is how administration happens,
+# and sshd refuses root in any case. A password nobody uses is a
+# password nobody rotates.
+#
+# The cost is the local emergency console: sulogin will not open a
+# shell for a locked root, so a machine that cannot boot is recovered
+# from the stick (setup disk --mount, arch-chroot) rather than from its
+# own keyboard. That is the rescue path this book documents anyway.
+#
+# An existing password is left alone, so a re-run cannot undo one that
+# was set on purpose.
+lock_root() {
+    case $(password_state root) in
+        P) msg "  root: already has a password, left alone" ;;
+        L) msg "  root: locked" ;;
+        *) in_target usermod -p '!' root && msg "  root: locked (use sudo from ${ADMIN})" ;;
+    esac
+}
+
 set_passwords() {
     local u line
-    for u in root "${ADMIN}" "${DAILY}"; do
+    lock_root
+    for u in "${ADMIN}" "${DAILY}"; do
         if [[ $(password_state "${u}") == P ]]; then
             msg "  ${u}: password already set"
             continue
@@ -1423,7 +1463,7 @@ cmd_install() {
         "              + packages.txt: ${extras:-(none)}" \
         "Boot:         $(is_rpi5 && echo "Pi firmware (cmdline.txt)" || echo "systemd-boot")$([[ ${ENCRYPT} == yes ]] && echo ", LUKS unlock")" \
         "Units:        $(repo_units | tr '\n' ' ')" \
-        "Accounts:     ${ADMIN} (1000, wheel$([[ ${ADMIN_NOPASSWD} == yes ]] && echo ", passwordless sudo")), ${DAILY}" \
+        "Accounts:     ${ADMIN} (1000, wheel$([[ ${ADMIN_NOPASSWD} == yes ]] && echo ", passwordless sudo")), ${DAILY}, root locked" \
         "SSH keys:     $(key_count "${HOST_REPO}/authorized_keys"), from ${HOST_REPO}/authorized_keys" \
         "Host repo:    ${HOST_REPO} -> ${TARGET}/home/${ADMIN}/arch" \
         "Maintenance:  aconfmgr ${ACONFMGR_REV:0:7} (admin diff/apply/save/upgrade), snapper + snap-pac"
@@ -1458,30 +1498,63 @@ cmd_install() {
 # committed, so printing the configuration would put a private key in
 # git. Only the public key -- which is public -- and a redacted summary
 # are shown.
-wg_field() { grep -iE "^[[:space:]]*${2}[[:space:]]*=" <<<"$1" | head -1 | sed -E 's/^[^=]*=[[:space:]]*//'; }
+# One field out of a config, or empty when it is not there. A missing
+# field is the normal case -- most configs have no DNS line -- so grep's
+# exit 1 is swallowed here: under 'set -o pipefail' it would otherwise
+# fail the assignment and 'set -e' would end the script, silently,
+# before anything was written.
+wg_field() {
+    { grep -iE "^[[:space:]]*${2}[[:space:]]*=" <<<"$1" || true; } \
+        | head -1 | sed -E 's/^[^=]*=[[:space:]]*//'
+}
 
 # Read a pasted file from the terminal. Ends at EOF (Ctrl-D), which is
 # why it is not a prompt(): the whole point is to paste several lines.
+#
+# Everything explanatory goes to stderr. This is called as
+# conf=$(read_pasted ...), so anything on stdout would be captured into
+# the variable instead of shown -- which is exactly what happened the
+# first time, leaving the caller staring at a silent terminal.
 read_pasted() {
-    msg "$1"
-    msg "  (paste it, then press Ctrl-D on a line of its own)"
+    {
+        echo
+        echo "${1}"
+        echo
+        echo "  Paste the whole file now. It ends when you press Ctrl-D on a"
+        echo "  line of its own. Ctrl-C to give up."
+        echo
+        echo "---------------- paste below this line ----------------"
+    } >&2
     cat
+    echo "---------------- end of paste ----------------" >&2
 }
 
 cmd_wireguard() {
-    local mode conf priv pub addr endpoint allowed dns keep tmp
+    local mode='' conf priv pub addr endpoint allowed dns keep tmp
+    # --genkey / --paste answer the first question up front, which also
+    # makes the step scriptable: prompt() uses readline, and readline
+    # buffers ahead, so a piped answer swallows the paste behind it.
+    while (($#)); do
+        case $1 in
+            --genkey) mode='genkey'; shift ;;
+            --paste)  mode='paste'; shift ;;
+            *) die "setup wireguard: unknown argument: $1" ;;
+        esac
+    done
     load_host
     layout_mounted || die "${TARGET} is not mounted: run 'setup disk --mount' first"
 
     section "WireGuard for ${HOSTNAME}"
     command -v wg >/dev/null || die "wg is not installed on this live system"
 
-    hint "genkey -- make the key here, so your provider never sees it"
-    hint "paste  -- you already have a wg0.conf, private key included"
-    while prompt mode "Key" "genkey"; do
-        [[ ${mode} == genkey || ${mode} == paste ]] && break
-        echo "  answer genkey or paste" >&2
-    done
+    if [[ -z ${mode} ]]; then
+        hint "genkey -- make the key here, so your provider never sees it"
+        hint "paste  -- you already have a wg0.conf, private key included"
+        while prompt mode "Key" "genkey"; do
+            [[ ${mode} == genkey || ${mode} == paste ]] && break
+            echo "  answer genkey or paste" >&2
+        done
+    fi
 
     priv=
     if [[ ${mode} == genkey ]]; then
@@ -1497,7 +1570,7 @@ cmd_wireguard() {
     else
         conf=$(read_pasted "Paste the wg0.conf, private key and all.")
     fi
-    [[ -n ${conf} ]] || die "nothing pasted"
+    [[ -n ${conf} ]] || die "nothing pasted: run it again and paste the file before Ctrl-D"
 
     # A generated key replaces whatever placeholder came back, or is
     # added if the config has no PrivateKey line at all.
@@ -1511,7 +1584,8 @@ cmd_wireguard() {
         fi
     fi
 
-    grep -qiE '^[[:space:]]*\[Interface\]' <<<"${conf}" || die "no [Interface] section: that is not a wg0.conf"
+    grep -qiE '^[[:space:]]*\[Interface\]' <<<"${conf}" \
+        || die "no [Interface] section: that is not a wg0.conf. Paste the whole file, starting at the [Interface] line."
     grep -qiE '^[[:space:]]*\[Peer\]' <<<"${conf}"      || die "no [Peer] section: nothing for it to connect to"
     grep -qiE '^[[:space:]]*PrivateKey[[:space:]]*=[[:space:]]*\S' <<<"${conf}" \
         || die "no PrivateKey: paste a complete config, or run again and choose genkey"
@@ -1547,8 +1621,10 @@ cmd_wireguard() {
     # The host repo describes the machine, so the package and the unit
     # belong there. The key does not.
     repo_add packages.txt wireguard-tools
-    [[ -n ${dns} ]] && repo_add packages.txt systemd-resolvconf \
-        && msg "  DNS= needs a resolvconf: added systemd-resolvconf"
+    if [[ -n ${dns} ]]; then
+        msg "  DNS= means wg-quick needs resolvconf on the target"
+        repo_add packages.txt systemd-resolvconf
+    fi
     repo_add units.txt 'wg-quick@wg0'
     if ! grep -q "^IgnorePath '/etc/wireguard/\*'" "${HOST_REPO}/aconfmgr/90-ignore.sh" 2>/dev/null; then
         printf "\n# The tunnel's key, written by 'setup wireguard'.\nIgnorePath '/etc/wireguard/*'\n" \
@@ -1576,7 +1652,7 @@ cmd_wireguard() {
 
 # Print one line per check; return non-zero if any failed.
 cmd_check() {
-    local failed=0 n dups units u state states=() keys out
+    local failed=0 n dups units u state states=() keys out pw
     load_host
     section "Check"
     if ! layout_mounted; then
@@ -1627,14 +1703,23 @@ cmd_check() {
         bad accounts "${ADMIN} or ${DAILY} does not exist"; failed=1
     fi
 
-    for u in root "${ADMIN}" "${DAILY}"; do
+    # root should be L: locked, no password to guess or rotate. P is
+    # allowed, for anyone who set one deliberately. NP is not: that is
+    # a root account with no password at all.
+    # Its own flag: 'failed' is cumulative across every check above, so
+    # testing it here would blame the passwords for an earlier failure.
+    pw=0
+    state=$(password_state root); states+=("root=${state:-?}")
+    [[ ${state} == L || ${state} == P ]] || pw=1
+    for u in "${ADMIN}" "${DAILY}"; do
         state=$(password_state "${u}"); states+=("${u}=${state:-?}")
-        [[ ${state} == P ]] || failed=1
+        [[ ${state} == P ]] || pw=1
     done
-    if [[ ${states[*]} != *=[!P]* ]]; then
-        ok passwords "${states[*]}"
+    if ((pw)); then
+        bad passwords "${states[*]} (root wants L or P; the rest P. P = set, L = locked, NP = none)"
+        failed=1
     else
-        bad passwords "${states[*]} (P = set, L = locked, NP = none)"
+        ok passwords "${states[*]}"
     fi
 
     if ask_target visudo -c >/dev/null 2>&1; then
