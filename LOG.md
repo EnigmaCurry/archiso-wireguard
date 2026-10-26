@@ -1760,3 +1760,56 @@ anything in `boomstick/bin/` is installed, not just setup, and
 `boomstick-cowspace` with its half-of-RAM logic and unit, in both the
 x86_64 and aarch64 halves. `ghostty-terminfo` remains the only package
 Arch Linux ARM lacks.
+
+## The install logs itself into the host repo (2026-10-26)
+
+Everything `setup` prints is now teed into `logs/000_SETUP.txt` in the
+host repo, which is committed and copied to the installed machine. The
+machine carries the record of how it was built: the questions, the
+Review screens, every command `run` traced, the package list, and the
+final check.
+
+Each invocation appends a header, because `setup host`, `setup disk` and
+`setup install` are separate runs:
+
+    ================================================================
+    setup install --passwords /root/test-passwords
+      when:    2026-10-26 19:42:35 UTC
+      clock:   synchronised with NTP
+      machine: x86_64 PC, UEFI
+      live:    boomstick 2026.10.26
+    ================================================================
+
+`clock:` is there because a Pi with no RTC battery boots in 1970 and
+waits for NTP, so a timestamp with nothing beside it cannot be trusted;
+it reads `NOT synchronised -- the times above may be wrong` when
+`timedatectl` says so. `live:` is os-release's IMAGE_ID, so the log
+also records *which image* installed the machine. A second `utc:` line
+appears only if the zone is not already UTC, which on a live system it
+always is.
+
+Three things this had to get right:
+
+ * **Staged in /run, not written straight into the repo.** `setup host
+   --from <git URL>` clones into HOST_REPO and would refuse a directory
+   that already contained `logs/`. Staging also means the lines printed
+   *after* `move_repo_in` -- the final check among them -- still reach
+   the installed machine: the exit trap closes the pipe, reaps `tee` so
+   the staged file is complete, and only then copies it into both the
+   live repo and the target's.
+ * **A reboot clears /run but not the repo**, so a later run seeds the
+   staging file from the committed copy rather than starting a shorter
+   log over the top of it.
+ * **Owned by admin**, since the copy lands after `move_repo_in` has
+   chowned the repo. It was root-owned on the first attempt.
+
+Checked before writing any of it that `read -e -i` still prefills when
+both streams are piped into `tee` -- the whole prompt UX depends on
+readline, which writes to stderr -- and it does.
+
+No secrets reach the log. `set_passwords` already avoided `run` and
+prints `+ chpasswd (user, from FILE)` rather than the line; LUKS
+passphrases and interactive `passwd` are read from the tty, not stdout;
+only paths are traced for the WiFi PSKs. Verified on an installed
+system: zero matches for private keys or password hashes, and the three
+`chpasswd` lines are the deliberate traces.

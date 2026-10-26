@@ -70,6 +70,90 @@ hint() { echo "  $*" >&2; }
 warn() { echo "WARNING: $*" >&2; }
 die()  { echo "ERROR: $*" >&2; exit 1; }
 ok()   { printf '✓ %-10s %s\n' "$1" "$2"; }
+
+# --- the install log --------------------------------------------------------
+# Everything setup prints is teed into the host repo, so the machine
+# carries the record of how it was installed, in git, forever.
+#
+# Staged in /run rather than written straight into the host repo: 'setup
+# host --from <git URL>' clones into HOST_REPO and would refuse a
+# directory that already had logs/ in it. Staging also survives the
+# repo moving into the target, so the lines printed after the move --
+# the final check among them -- still reach the installed machine.
+LOG_STAGE=${LOG_STAGE:-/run/boomstick-setup.log}
+LOG_REL=logs/000_SETUP.txt
+LOG_TEE_PID=
+
+# Is the clock to be trusted? A Pi with no RTC battery boots in 1970 and
+# waits for NTP, so a timestamp without this beside it means nothing.
+clock_note() {
+    local synced
+    synced=$(timedatectl show -p NTPSynchronized --value 2>/dev/null) || synced=
+    case ${synced} in
+        yes) echo "synchronised with NTP" ;;
+        no)  echo "NOT synchronised -- the times above may be wrong" ;;
+        *)   echo "unknown (timedatectl said nothing)" ;;
+    esac
+}
+
+log_header() {
+    local id ver
+    # shellcheck disable=SC1091 # the live system's, read for IMAGE_ID
+    [[ -r /etc/os-release ]] && . /etc/os-release
+    id=${IMAGE_ID:-unknown}
+    ver=${IMAGE_VERSION:-unknown}
+    echo
+    echo "================================================================"
+    echo "setup $*"
+    echo "  when:    $(date '+%Y-%m-%d %H:%M:%S %Z')"
+    # The live system is on UTC, so a second line would usually just
+    # repeat the first. Worth having only once a zone has been set.
+    [[ $(date '+%Z') == UTC ]] || echo "  utc:     $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+    echo "  clock:   $(clock_note)"
+    echo "  machine: $(machine_name)"
+    echo "  live:    ${id} ${ver}"
+    echo "================================================================"
+}
+
+# Tee from here on. Called once; the chain in cmd_status inherits it.
+start_log() {
+    mkdir -p "$(dirname "${LOG_STAGE}")"
+    # A reboot clears /run but not the repo, so carry an earlier run's
+    # log forward rather than starting a shorter one over the top of it.
+    if [[ ! -s ${LOG_STAGE} && -s ${HOST_REPO}/${LOG_REL} ]]; then
+        cat "${HOST_REPO}/${LOG_REL}" >"${LOG_STAGE}"
+    fi
+    exec > >(tee -a "${LOG_STAGE}") 2>&1
+    LOG_TEE_PID=$!
+    log_header "$@"
+}
+
+# Copy the staged log into every repo that exists: the live one, and the
+# target's once the repo has moved in.
+sync_log() {
+    local t
+    [[ -s ${LOG_STAGE} ]] || return 0
+    [[ -d ${HOST_REPO} ]] && install -D -m 0644 "${LOG_STAGE}" "${HOST_REPO}/${LOG_REL}" 2>/dev/null
+    t=${TARGET}/home/${ADMIN}/arch
+    # Owned by ADMIN like the rest of the repo: this lands after
+    # move_repo_in has already chowned it.
+    if [[ -d ${t} ]]; then
+        install -D -m 0644 "${LOG_STAGE}" "${t}/${LOG_REL}" 2>/dev/null \
+            && chown -R --reference="${t}" "${t}/$(dirname "${LOG_REL}")" 2>/dev/null
+    fi
+    return 0
+}
+
+# Close the pipe and reap tee first, so the staged file is complete
+# before it is copied.
+on_exit() {
+    if [[ -n ${LOG_TEE_PID} ]]; then
+        exec 1>&- 2>&-
+        wait "${LOG_TEE_PID}" 2>/dev/null || true
+        LOG_TEE_PID=
+    fi
+    sync_log
+}
 bad()  { printf '✗ %-10s %s\n' "$1" "$2"; }
 
 # Echo a command in the book's words, then run it.
@@ -1478,6 +1562,8 @@ main() {
     [[ ${EUID} -eq 0 ]] || die "run setup as root on the live system"
     local cmd=${1:-status}
     (($#)) && shift
+    trap on_exit EXIT
+    start_log "${cmd}" "$@"
     case ${cmd} in
         status|host|disk|install|check|reboot) "cmd_${cmd}" "$@" ;;
         *) usage >&2; exit 2 ;;
