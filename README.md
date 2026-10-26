@@ -400,7 +400,8 @@ Logging in (over SSH or on the console) shows which image booted:
                  Memory   15.8 GiB
                  Docs     https://archlinuxarm.org/wiki
 
-Install Arch Linux with `archinstall`, or run `Installation_guide` for the guide.
+Install Arch Linux with `setup`: https://book.rymcg.tech/arch-workstation/
+Upstream alternatives: `archinstall`, or `Installation_guide` for the manual guide.
 Configuration loaded from the stick: journalctl -u boomstick-config
 ```
 

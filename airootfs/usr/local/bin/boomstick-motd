@@ -17,6 +17,8 @@ set -uo pipefail
 
 MOTD=${MOTD:-/etc/motd}
 OS_RELEASE=${OS_RELEASE:-/etc/os-release}
+# Where `setup` is documented, for the banner's footer.
+BOOK_URL=${BOOK_URL:-https://book.rymcg.tech/arch-workstation/}
 # Width the logo column is padded to, and the width of the info keys.
 LOGO_WIDTH=17
 KEY_WIDTH=9
@@ -116,7 +118,10 @@ banner() {
         printf '%s%-*s%s%s\n' "${COLOR}" "${LOGO_WIDTH}" "${ART[i]:-}" "${RESET}" "${ROWS[i]:-}"
     done
     echo
-    printf '%sInstall Arch Linux with `archinstall`, or run `Installation_guide` for the guide.%s\n' "${DIM}" "${RESET}"
+    # This stick's own installer first, with the URL spelled out so it can
+    # be read straight off the screen, then the two ways Arch offers.
+    printf '%sInstall Arch Linux with `setup`: %s%s\n' "${DIM}" "${BOOK_URL}" "${RESET}"
+    printf '%sUpstream alternatives: `archinstall`, or `Installation_guide` for the manual guide.%s\n' "${DIM}" "${RESET}"
     printf '%sConfiguration loaded from the stick: journalctl -u boomstick-config%s\n' "${DIM}" "${RESET}"
     echo
 }
