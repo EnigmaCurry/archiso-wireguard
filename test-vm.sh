@@ -35,8 +35,12 @@
 # printed as it goes. On an x86_64 Linux host with /dev/kvm it uses KVM.
 #
 # Environment:
-#   ENCRYPT=yes      install with LUKS (the passphrase is typed for you
-#                    over a pty, as "setuptest")
+#   ENCRYPT=yes      install with LUKS, as "setuptest": the passphrase is
+#                    typed over a pty for setup disk, and again on the
+#                    serial console for every boot of the installed disk.
+#                    So that the initramfs asks there, this appends
+#                    console=ttyS0 to the installed boot entry -- the one
+#                    way the test machine differs from a real install.
 #   KEEP=1           leave the VM's disks in test/ afterwards
 #   DESKTOP=1        go on to install the desktop (step 6)
 #   SWAY_HOME_DIR    a sway-home checkout to install in step 6, as a git
@@ -72,6 +76,11 @@ START=${SECONDS}
 elapsed() { local s=$((SECONDS - START)); printf '%dm%02ds' $((s / 60)) $((s % 60)); }
 
 QEMU_PID=
+# Set while a boot is wired to a FIFO pair instead of a write-only log,
+# so that something can be typed back at the VM's console.
+CONSOLE_PIPE=
+CONSOLE_FD=
+CONSOLE_CAT_PID=
 
 stop_vm() {
     [[ -n ${QEMU_PID} ]] || return 0
@@ -80,7 +89,20 @@ stop_vm() {
     QEMU_PID=
 }
 
+console_stop() {
+    if [[ -n ${CONSOLE_FD} ]]; then exec {CONSOLE_FD}>&-; CONSOLE_FD=; fi
+    if [[ -n ${CONSOLE_CAT_PID} ]]; then
+        kill "${CONSOLE_CAT_PID}" 2>/dev/null || true
+        CONSOLE_CAT_PID=
+    fi
+    if [[ -n ${CONSOLE_PIPE} ]]; then
+        rm -f "${CONSOLE_PIPE}.in" "${CONSOLE_PIPE}.out"
+        CONSOLE_PIPE=
+    fi
+}
+
 cleanup() {
+    console_stop
     stop_vm
     if [[ ${KEEP} != 1 ]]; then
         rm -f "${WORK}/stick.img" "${WORK}/disk.qcow2" "${WORK}/vars.fd"
@@ -159,6 +181,10 @@ clone() {
 boot_vm() {
     local log=$1
     shift
+    # A write-only log file, unless a FIFO pair is up for a console we
+    # have to type into (boot_installed under ENCRYPT=yes).
+    local serial="file:${log}"
+    if [[ -n ${CONSOLE_PIPE} ]]; then serial="pipe:${CONSOLE_PIPE}"; fi
     # shellcheck disable=SC2046 # accel() is a list of words
     qemu-system-x86_64 \
         -machine q35 $(accel) -smp "${CPUS}" -m "${MEM}" \
@@ -168,7 +194,7 @@ boot_vm() {
         -device virtio-blk-pci,drive=target,serial="${DISK_SERIAL}",bootindex=2 \
         -netdev user,id=n0,hostfwd=tcp:127.0.0.1:"${SSH_PORT}"-:22 \
         -device virtio-net-pci,netdev=n0 \
-        -display none -serial file:"${log}" -monitor none \
+        -display none -serial "${serial}" -monitor none \
         -no-reboot \
         "$@" &
     QEMU_PID=$!
@@ -205,6 +231,46 @@ wait_exit() {
     QEMU_PID=
 }
 
+# boot_installed LOG: boot the installed disk. Without encryption that is
+# just boot_vm. With it, the initramfs asks for the LUKS passphrase before
+# anything else, so this boot gets a FIFO pair -- which can be typed into
+# -- in place of the write-only log file, and answers the prompt.
+boot_installed() {
+    local log=$1
+    console_stop
+    if [[ ${ENCRYPT} != yes ]]; then
+        boot_vm "${log}"
+        return
+    fi
+    CONSOLE_PIPE="${WORK}/console"
+    rm -f "${CONSOLE_PIPE}.in" "${CONSOLE_PIPE}.out"
+    mkfifo "${CONSOLE_PIPE}.in" "${CONSOLE_PIPE}.out"
+    : >"${log}"
+    boot_vm "${log}"
+    # O_RDWR on a FIFO never blocks, so this cannot hang if QEMU died;
+    # holding it open keeps the VM's console from reading EOF in between.
+    exec {CONSOLE_FD}<>"${CONSOLE_PIPE}.in"
+    cat "${CONSOLE_PIPE}.out" >>"${log}" &
+    CONSOLE_CAT_PID=$!
+    type_passphrase "${log}"
+}
+
+# type_passphrase LOG: wait for the initramfs to ask, then answer it.
+type_passphrase() {
+    local log=$1 deadline=$((SECONDS + BOOT_WAIT * 60))
+    printf 'Waiting for the LUKS passphrase prompt '
+    until grep -qa 'Please enter passphrase' "${log}"; do
+        kill -0 "${QEMU_PID}" 2>/dev/null \
+            || { echo; die "QEMU exited before asking for the passphrase (see ${log})"; }
+        ((SECONDS < deadline)) \
+            || { echo; die "no passphrase prompt after ${BOOT_WAIT} minutes (see ${log})"; }
+        printf .
+        sleep 2
+    done
+    printf ' typing it (%s)\n' "$(elapsed)"
+    printf '%s\n' "${PASSWORD}" >&"${CONSOLE_FD}"
+}
+
 # --- the test -----------------------------------------------------------------
 
 # Step 6: the Desktop chapter, as the book does it: desktop/ into the
@@ -228,7 +294,7 @@ desktop() {
     wait_exit
 
     phase "Boot the desktop"
-    boot_vm "${WORK}/serial-desktop.log"
+    boot_installed "${WORK}/serial-desktop.log"
     wait_ssh admin "${WORK}/serial-desktop.log"
 
     phase "Check the desktop"
@@ -357,10 +423,16 @@ EOF
 
     phase "setup disk"
     if [[ ${ENCRYPT} == yes ]]; then
-        # cryptsetup reads the passphrase from the terminal: give it one,
-        # and type the passphrase three times (set, verify, open).
+        # For LUKS, cryptsetup reads the passphrase from stdin up to the
+        # first newline whenever stdin is not a terminal -- so send it on
+        # a pipe and do NOT ask ssh for a pty (-tt). With a pty it prompts
+        # on the terminal instead and flushes what is already buffered
+        # there, which is what used to hang this step forever.
+        # Three lines covers both cryptsetup calls (luksFormat, then open)
+        # whether or not luksFormat asks a second time to verify; any line
+        # left over is simply never read.
         printf '%s\n%s\n%s\n' "${PASSWORD}" "${PASSWORD}" "${PASSWORD}" \
-            | vm -tt root@127.0.0.1 setup --yes disk --confirm-wipe "${HOST}"
+            | vm root@127.0.0.1 setup --yes disk --confirm-wipe "${HOST}"
     else
         vm root@127.0.0.1 setup --yes disk --confirm-wipe "${HOST}"
     fi
@@ -368,18 +440,22 @@ EOF
     phase "setup install"
     vm root@127.0.0.1 setup --yes install --passwords /root/test-passwords
 
+    if [[ ${ENCRYPT} == yes ]]; then
+        # systemd-cryptsetup asks on /dev/console, which with no console=
+        # is the virtual console -- which QEMU is not showing and this
+        # test cannot type into. Point it at the serial line instead.
+        phase "Point the installed console at ttyS0 (ENCRYPT=yes only)"
+        vm root@127.0.0.1 \
+            "sed -i '/^options/ s/\$/ console=ttyS0,115200/' /mnt/boot/loader/entries/arch.conf \
+             && grep ^options /mnt/boot/loader/entries/arch.conf"
+    fi
+
     phase "setup reboot"
     vm root@127.0.0.1 setup --yes reboot || true
     wait_exit
 
     phase "Boot the installed disk"
-    if [[ ${ENCRYPT} == yes ]]; then
-        echo "ENCRYPT=yes: the installed system waits for its passphrase on the console,"
-        echo "which this test cannot type yet. Stopping after the install."
-        echo "PASS (install only)"
-        return
-    fi
-    boot_vm "${WORK}/serial-installed.log"
+    boot_installed "${WORK}/serial-installed.log"
     wait_ssh admin "${WORK}/serial-installed.log"
 
     phase "Check the installed system"

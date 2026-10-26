@@ -1338,3 +1338,38 @@ user's environment comes from Nix with Home Manager and sway-home.
    /run/opengl-driver is linked after `non-nixos-gpu-setup`, the sway
    config is in place, and `admin diff` finds no drift. Logging in to
    sway, and whether the GPU drivers draw, remain untested.
+
+## ENCRYPT=yes works end to end (2026-10-26)
+
+ * `ENCRYPT=yes just test-vm` used to hang forever in `setup disk`, at
+   `cryptsetup luksFormat`, and the three passphrases piped into it were
+   never read. The cause was the pty: the test ran `setup disk` under
+   `ssh -tt`, and with a terminal on stdin cryptsetup prompts on the
+   terminal and flushes what is already buffered there -- which is
+   exactly the text we had sent. cryptsetup's manual is explicit that
+   for LUKS a *non-terminal* stdin is read up to the first newline, so
+   dropping `-tt` is the whole fix for this half. `setup` itself did not
+   need to change. Three lines are still sent, which covers both
+   `luksFormat` and `cryptsetup open` whether or not the format step
+   asks a second time to verify; a line left over is never read.
+ * The second half was the boot. `boot_vm` wired the VM's serial port to
+   `-serial file:`, which is write-only, so nothing could answer the
+   initramfs passphrase prompt. Encrypted boots now get a FIFO pair
+   (`-serial pipe:`) instead: `cat` copies the VM's output into the same
+   log as before, and a held-open write end types the passphrase once
+   `type_passphrase` sees the prompt. The FIFO is opened `<>` (O_RDWR),
+   which never blocks, so a dead QEMU cannot wedge the test.
+ * systemd-cryptsetup asks on /dev/console, which with no `console=` is
+   the virtual console -- not shown by `-display none` and not typeable.
+   So under `ENCRYPT=yes` only, the test appends `console=ttyS0,115200`
+   to the installed boot entry before rebooting. That is the one way the
+   test machine differs from a real install, and it is noted in the
+   script's header.
+ * Both installed-disk boots (the plain one and the DESKTOP=1 reboot) now
+   go through `boot_installed`, so either can be encrypted.
+ * `ENCRYPT=yes just test-vm` passes on the Linux host (KVM) in 1m57s:
+   LUKS2 format and open in 14s, the prompt answered 1m36s in, and all
+   twelve installed-system checks plus snap-pac and `admin diff` green.
+   `setup check` reports the LUKS command line it booted:
+   `✓ boot  systemd-boot, entries/arch.conf: rd.luks.name=<uuid>=cryptroot`.
+   Encrypted boot on real hardware, and on the Pi 5, is still untested.
