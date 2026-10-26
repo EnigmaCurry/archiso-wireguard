@@ -210,7 +210,12 @@ main() {
     # The test stick has no WiFi, WireGuard or webhook on purpose.
     grep -v '^WARNING:' "${WORK}/provision.log" || true
     qemu-img create -q -f qcow2 "${WORK}/disk.qcow2" "${DISK_SIZE}"
+    # Writable: the firmware keeps its variables there, and the source
+    # may be read-only (every file in the Nix store is), so is a copy
+    # kept by an earlier KEEP=1 run.
+    rm -f "${WORK}/vars.fd"
     cp "${FW_VARS}" "${WORK}/vars.fd"
+    chmod u+w "${WORK}/vars.fd"
     cat >"${WORK}/host.env" <<EOF
 HOSTNAME=${HOST}
 DISK=/dev/disk/by-id/virtio-${DISK_SERIAL}

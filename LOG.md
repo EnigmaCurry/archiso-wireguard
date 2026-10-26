@@ -1172,3 +1172,10 @@ they need an Arch live system.
    case (`PermitRootLogin no`), where older versions printed them in
    lower case, and the test grepped for `permitrootlogin no` exactly.
    It now matches without regard to case (`grep -qix`).
+ * On NixOS (qemu from `nix shell nixpkgs#qemu`), QEMU could not open
+   test/vars.fd: "Permission denied". The vars file is copied from
+   qemu's store path, where every file is mode 444, and `cp` kept the
+   mode. The copy is now made writable, after removing any earlier
+   (read-only) copy a KEEP=1 run left behind. The other copies are
+   fine: the stick image comes from out/, and the firmware code file
+   is opened read-only.
