@@ -12,7 +12,7 @@ Before=sshd.service systemd-user-sessions.service getty@tty1.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/bin/arch-iso-motd --write
+ExecStart=/usr/local/bin/boomstick-motd --write
 
 [Install]
 WantedBy=sysinit.target

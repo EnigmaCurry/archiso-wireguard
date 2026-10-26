@@ -6,7 +6,7 @@
 # is sent even if WireGuard failed, and then includes the error. If the
 # stick has no WireGuard config, it doesn't wait.
 #
-# Usage: arch-iso-webhook [--dry-run]   (--dry-run prints instead of POSTing)
+# Usage: boomstick-webhook [--dry-run]   (--dry-run prints instead of POSTing)
 set -uo pipefail
 
 WG_IF=${WG_IF:-wg0}

@@ -8,12 +8,12 @@ Before=shutdown.target sysinit.target
 # Everything that consumes what this installs. Ordering before
 # sysinit.target already covers them; naming them keeps it true if one
 # ever moves earlier.
-Before=iwd.service sshd.service sshdgenkeys.service wg-quick@wg0.service arch-iso-webhook.service
+Before=iwd.service sshd.service sshdgenkeys.service wg-quick@wg0.service boomstick-webhook.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/bin/arch-iso-config
+ExecStart=/usr/local/bin/boomstick-config
 
 [Install]
 WantedBy=sysinit.target

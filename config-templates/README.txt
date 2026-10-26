@@ -1,5 +1,5 @@
-archiso-config - the configuration for this Arch Linux live USB
-===============================================================
+boomstick - the configuration for this Arch Linux live USB
+==========================================================
 
 The image on this stick is generic and contains no secrets. Everything
 that makes it yours lives in this directory and is read on every boot,
@@ -15,7 +15,7 @@ computer, then boot the stick.
 Files that are missing, empty or entirely commented out are ignored, and
 the feature they configure is skipped.
 
-Keep this partition labelled ARCH_CONFIG. That label is how the live
+Keep this partition labelled BOOMSTICK. That label is how the live
 system finds it: on a machine with enough RAM the live system is copied
 to RAM and the boot partition is unmounted before anything runs, so the
 label is all there is to go on.

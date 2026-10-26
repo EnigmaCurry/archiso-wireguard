@@ -1545,3 +1545,49 @@ user's environment comes from Nix with Home Manager and sway-home.
    book already had -- boot the stick, `setup disk --mount`, and
    `arch-chroot /mnt snapper --no-dbus undochange`.
  * Reading the ESP needs sudo at all: it is mounted `fmask=0077`.
+
+## Rename arch-iso to boomstick (2026-10-26)
+
+The two earlier renames left the runtime names alone so that existing
+sticks kept working. This one finishes the job, and drops that
+compatibility deliberately: the images in `out/` and any stick written
+from them are stale after it.
+
+ * Hostname `arch-iso` -> `boomstick`, so `ssh boomstick` is the
+   connection the book tells you to set up, and the webhook announces
+   `boomstick is up (boomstick <version>)`.
+ * The FAT label `ARCH_CONFIG` -> `BOOMSTICK`, and the configuration
+   directory on it `archiso-config/` -> `boomstick/`.
+ * `arch-iso-config`, `arch-iso-webhook` and `arch-iso-motd` ->
+   `boomstick-config`, `boomstick-webhook`, `boomstick-motd`, with their
+   units, the `.wants` symlinks (name *and* target) and
+   `/etc/arch-iso/webhook.env` -> `/etc/boomstick/webhook.env`.
+ * `iso_name` is `boomstick` and `boomstick-rpi5`, so the images are
+   `boomstick-<date>-x86_64.img`, `boomstick-rpi5-<date>-aarch64.img`
+   and `boomstick-usb-<date>-x86_64+rpi5.img`. The two names stay
+   distinct because the login banner's `Image` row is `IMAGE_ID` from
+   os-release, which is how it says which half booted.
+ * Nothing upstream moved: `/run/archiso/bootmnt`, `archisobasedir`,
+   `archisosearchuuid` and `mkinitcpio-archiso` belong to archiso, not
+   to us. The rename was done as ordered exact-string substitutions
+   (longest first, bare `arch-iso` last) with those four asserted
+   unchanged in every file.
+ * Besides the trademark point -- `arch-iso`, `ARCH_CONFIG` and
+   `archiso-config` all leaned on the Arch name, which "BOOMSTICK (for
+   Arch Linux)" exists to avoid -- this removes the last confusion
+   between our config directory and archiso's own `/run/archiso` paths.
+
+Consequences, both of which bite before the next test:
+
+ 1. `just test-vm` clones an image from `out/` and provisions it with
+    *this* tree's `provision.sh`, which now writes `boomstick/`. An old
+    image's `arch-iso-config` looks for `archiso-config/`, finds
+    nothing, installs no SSH key, and the test hangs waiting for ssh.
+    So the images have to be rebuilt before the suite means anything.
+ 2. `setup` keeps the stick it booted from out of the install targets by
+    looking up the config label. A rebranded `setup` on an old
+    `ARCH_CONFIG` stick does not recognise it, and would offer the stick
+    as a disk to install onto. Rewrite the stick from a new image
+    rather than running a new `setup` against an old one.
+
+Earlier entries in this log keep the old names as they were at the time.

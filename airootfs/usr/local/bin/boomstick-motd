@@ -4,12 +4,12 @@
 # One overlay builds every image, so the banner is rendered at boot
 # rather than baked in: it reads the /etc/os-release of whichever live
 # system actually booted. That file is the only thing that says which
-# image this is -- IMAGE_ID is "arch-iso" on x86_64 and "arch-rpi5" on
+# image this is -- IMAGE_ID is "boomstick" on x86_64 and "boomstick-rpi5" on
 # the Raspberry Pi 5 -- and the usb image carries both live systems on
 # one partition, so the question is a real one.
 #
-# Usage: arch-iso-motd           print the banner
-#        arch-iso-motd --write   write it to /etc/motd (what the service does)
+# Usage: boomstick-motd           print the banner
+#        boomstick-motd --write   write it to /etc/motd (what the service does)
 #
 # /etc/motd is what a login shows: sshd has PrintMotd off (Arch's
 # drop-in), and pam_motd prints the file for SSH and the console alike.
@@ -117,7 +117,7 @@ banner() {
     done
     echo
     printf '%sInstall Arch Linux with `archinstall`, or run `Installation_guide` for the guide.%s\n' "${DIM}" "${RESET}"
-    printf '%sConfiguration loaded from the stick: journalctl -u arch-iso-config%s\n' "${DIM}" "${RESET}"
+    printf '%sConfiguration loaded from the stick: journalctl -u boomstick-config%s\n' "${DIM}" "${RESET}"
     echo
 }
 

@@ -2,7 +2,7 @@
 # Install this live system's configuration from the config partition.
 #
 # The image is generic and holds no secrets: WiFi, WireGuard, the SSH
-# authorized_keys and the webhook URL live in an archiso-config/
+# authorized_keys and the webhook URL live in an boomstick/
 # directory on the FAT32 partition the stick boots from, which the user
 # fills in after writing the image. This runs in early boot, before
 # iwd, wg-quick, sshd and the boot webhook, and copies them into the
@@ -11,7 +11,7 @@
 # SSH host keys are generated on the first boot and written back to the
 # config partition, so the fingerprint is the same on every later boot.
 #
-# Usage: arch-iso-config          (started by arch-iso-config.service)
+# Usage: boomstick-config          (started by boomstick-config.service)
 #
 # Missing or commented-out files are not an error: the feature they
 # configure is skipped and boot continues.
@@ -19,12 +19,12 @@ set -uo pipefail
 
 # Directory on the config partition, and the filesystem label used to
 # find that partition when it is not the one we booted from.
-CONFIG_DIR=${CONFIG_DIR:-archiso-config}
-CONFIG_LABEL=${CONFIG_LABEL:-ARCH_CONFIG}
+CONFIG_DIR=${CONFIG_DIR:-boomstick}
+CONFIG_LABEL=${CONFIG_LABEL:-BOOMSTICK}
 # Where archiso's initramfs leaves the boot partition.
 BOOTMNT=${BOOTMNT:-/run/archiso/bootmnt}
 # Where we mount a config partition we found ourselves.
-FALLBACK_MNT=/run/arch-iso/config
+FALLBACK_MNT=/run/boomstick/config
 # Seconds to wait for a labelled config partition to appear: USB
 # enumeration can be slower than early boot.
 LABEL_WAIT=${LABEL_WAIT:-10}
@@ -120,8 +120,8 @@ install_authorized_keys() {
 # The webhook service only starts if this file exists.
 install_webhook() {
     if grep -qE '^\s*WEBHOOK_URL=.+' "${SRC}/webhook.env" 2>/dev/null; then
-        install -D -m 600 "${SRC}/webhook.env" /etc/arch-iso/webhook.env \
-            && chmod 700 /etc/arch-iso \
+        install -D -m 600 "${SRC}/webhook.env" /etc/boomstick/webhook.env \
+            && chmod 700 /etc/boomstick \
             && msg "Webhook: webhook.env installed"
     else
         msg "Webhook: not configured"
@@ -184,7 +184,7 @@ install_host_keys() {
             install -m 644 "${key}.pub" "/etc/ssh/ssh_host_${type}_key.pub"
         else
             rm -f "/etc/ssh/ssh_host_${type}_key" "/etc/ssh/ssh_host_${type}_key.pub"
-            ssh-keygen -q -t "${type}" -N '' -C root@arch-iso \
+            ssh-keygen -q -t "${type}" -N '' -C root@boomstick \
                 -f "/etc/ssh/ssh_host_${type}_key" || continue
             generated+=("${type}")
         fi

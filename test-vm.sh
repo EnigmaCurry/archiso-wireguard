@@ -115,7 +115,7 @@ trap cleanup EXIT
 find_image() {
     local img=${1:-}
     if [[ -z ${img} ]]; then
-        # shellcheck disable=SC2012 # names are ours: arch-usb-<date>-<arch>.img
+        # shellcheck disable=SC2012 # names are ours: boomstick-usb-<date>-<arch>.img
         img=$(ls -t "${OUT}"/*x86_64*.img 2>/dev/null | head -1) || true
         [[ -n ${img} ]] || die "no x86_64 image in out/: run 'just build' (or 'just build-usb') first"
     fi

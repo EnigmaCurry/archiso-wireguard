@@ -13,7 +13,7 @@ means borrowing a monitor and keyboard, typing a WiFi passphrase into
 `iwctl`, setting up SSH, getting your workstation onto the same network
 (or chaining jump hosts), and cleaning a stale entry out of
 `known_hosts`, every single time. BOOMSTICK does all of that for you:
-plug it in, power on, and `ssh arch-iso`. The blog post
+plug it in, power on, and `ssh boomstick`. The blog post
 [BOOMSTICK](https://book.rymcg.tech/blog/linux/boomstick/)
 walks through it start to finish.
 
@@ -26,7 +26,7 @@ It is the stock Arch Linux installer (archiso's `releng` profile) plus:
  * **SSH** as root with your `authorized_keys` (key-only, no passwords),
    and host keys the stick makes for itself on its first boot and keeps,
    so the fingerprint doesn't change from one boot to the next.
- * Hostname `arch-iso`.
+ * Hostname `boomstick`.
  * An optional **boot webhook** (e.g. ntfy or matrix-hookshot) that
    reports the LAN, public and WireGuard addresses, or the WireGuard
    error if the tunnel didn't come up.
@@ -34,7 +34,7 @@ It is the stock Arch Linux installer (archiso's `releng` profile) plus:
 The image boots without any prompts.
 
 **The image itself is generic and contains no secrets.** Your WiFi
-passwords, WireGuard key and SSH keys live in an `archiso-config/`
+passwords, WireGuard key and SSH keys live in a `boomstick/`
 directory on the stick's FAT32 partition, which you fill in *after*
 writing the image. The same image works for everyone; the stick is what
 is yours.
@@ -87,7 +87,7 @@ just build-usb
 
 This builds one image that boots **x86_64 PCs (UEFI)** and the
 **Raspberry Pi 5**, into
-`out/arch-usb-<date>-x86_64+rpi5.img` (about 2.7 GB). The first build
+`out/boomstick-usb-<date>-x86_64+rpi5.img` (about 2.7 GB). The first build
 pulls the `archlinux` image and downloads about 1 GB of packages; later
 builds reuse a package cache and take a few minutes.
 
@@ -112,17 +112,17 @@ partition.
 Find the device with `lsblk`, then (this erases the stick):
 
 ```
-sudo dd if=out/arch-usb-<date>-x86_64+rpi5.img \
+sudo dd if=out/boomstick-usb-<date>-x86_64+rpi5.img \
   of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
 ### 4. Configure the stick
 
 Replug the stick and mount its FAT32 partition, which is labelled
-`ARCH_CONFIG`. Many desktops mount it automatically; otherwise:
+`BOOMSTICK`. Many desktops mount it automatically; otherwise:
 
 ```
-udisksctl mount -b /dev/sdX1    # no sudo; mounts at /run/media/you/ARCH_CONFIG
+udisksctl mount -b /dev/sdX1    # no sudo; mounts at /run/media/you/BOOMSTICK
 ```
 
 Don't reach for `sudo mount` here. FAT stores no ownership, so the
@@ -137,7 +137,7 @@ sudo mount -o uid=$(id -u),gid=$(id -g) /dev/sdX1 /mnt
 The partition contains:
 
 ```
-archiso-config/
+boomstick/
   README.txt             what this directory is
   ssh/authorized_keys    public keys allowed in as root (required)
   wifi/<SSID>.psk        one file per WiFi network (optional)
@@ -164,7 +164,7 @@ just provision       # copy them to the stick
 ```
 
 With no argument, `just provision` goes looking for the stick itself:
-whichever filesystem is labelled `ARCH_CONFIG`, mounted or not. If it
+whichever filesystem is labelled `BOOMSTICK`, mounted or not. If it
 has to mount it, it uses `udisksctl` (so the ownership is right) and
 unmounts it again when it's done, leaving the stick ready to pull.
 
@@ -182,26 +182,26 @@ generic thing it was built as — `just inspect` will tell you so.
 Boot the target machine from the stick. Plug in ethernet, or be in range
 of one of your WiFi networks. On the **first** boot the live system
 generates its SSH host keys and writes them back to
-`archiso-config/ssh/host/` on the stick, so every later boot presents
+`boomstick/ssh/host/` on the stick, so every later boot presents
 the same fingerprint.
 
 Every machine you boot the stick on comes up with the same hostname
-(`arch-iso`), WireGuard address and SSH host key, so give it a name in
+(`boomstick`), WireGuard address and SSH host key, so give it a name in
 your workstation's `~/.ssh/config`:
 
 ```
-Host arch-iso
+Host boomstick
     HostName 10.0.0.2
     User root
-    HostKeyAlias arch-iso
+    HostKeyAlias boomstick
 ```
 
 `HostKeyAlias` stores the host key in `known_hosts` under the name
-`arch-iso` rather than an IP address. Once the webhook arrives (or after
+`boomstick` rather than an IP address. Once the webhook arrives (or after
 a minute or two), SSH in over the VPN:
 
 ```
-ssh arch-iso
+ssh boomstick
 ```
 
 Without WireGuard, use the LAN address from the webhook (or from
@@ -209,14 +209,14 @@ Without WireGuard, use the LAN address from the webhook (or from
 the same host key check:
 
 ```
-ssh -o HostName=192.168.1.50 arch-iso
+ssh -o HostName=192.168.1.50 boomstick
 ```
 
 To confirm the host key on first connect, compare with the fingerprint
 the live system printed on the console, or compute it from the stick:
 
 ```
-ssh-keygen -lf /run/media/you/ARCH_CONFIG/archiso-config/ssh/host/ssh_host_ed25519_key.pub
+ssh-keygen -lf /run/media/you/BOOMSTICK/boomstick/ssh/host/ssh_host_ed25519_key.pub
 ```
 
 From there, install Arch as usual (`archinstall`, or the
@@ -224,7 +224,7 @@ From there, install Arch as usual (`archinstall`, or the
 
 ## Configuration
 
-These are the files in `archiso-config/` on the stick (or in `secrets/`
+These are the files in `boomstick/` on the stick (or in `secrets/`
 in the repo, if you use `just provision`).
 
 ### WireGuard (optional)
@@ -272,7 +272,7 @@ and the address you gave it:
 
 ```ini
 [Peer]
-# arch-iso
+# boomstick
 PublicKey = <the stick's public key>
 AllowedIPs = 10.0.0.2/32
 ```
@@ -331,7 +331,7 @@ Once the network is up and WireGuard connects (or gives up after two
 minutes), it POSTs a plain-text message like this:
 
 ```
-arch-iso is up (arch-iso 2026.10.24)
+boomstick is up (boomstick 2026.10.24)
 LAN: 192.168.1.50/24 on enp1s0
 Public: 203.0.113.4
 WireGuard: 10.0.0.2/32 on wg0 (handshake 3s ago)
@@ -344,8 +344,8 @@ random topic or a server with access control.
 ## How the configuration is loaded
 
 Early in boot, before iwd, `wg-quick@wg0`, sshd and the webhook,
-[`arch-iso-config`](airootfs/usr/local/bin/arch-iso-config) finds the
-config partition and copies `archiso-config/` into the running system's
+[`boomstick-config`](airootfs/usr/local/bin/boomstick-config) finds the
+config partition and copies `boomstick/` into the running system's
 tmpfs, root-only:
 
 | on the stick | in the live system |
@@ -353,15 +353,15 @@ tmpfs, root-only:
 | `wifi/*.psk` | `/var/lib/iwd/` (0600) |
 | `wireguard/wg0.conf` | `/etc/wireguard/wg0.conf` (0600) |
 | `ssh/authorized_keys` | `/root/.ssh/authorized_keys` (0600) |
-| `webhook.env` | `/etc/arch-iso/webhook.env` (0600) |
+| `webhook.env` | `/etc/boomstick/webhook.env` (0600) |
 | `ssh/host/*` | `/etc/ssh/` (0600), generated and saved back on the first boot |
 | `bin/setup` | `/usr/local/bin/setup` (0755), replacing the one in the image |
 
 It looks in two places, in this order:
 
- 1. `/run/archiso/bootmnt/archiso-config`, when archiso left the
+ 1. `/run/archiso/bootmnt/boomstick`, when archiso left the
     partition it booted from mounted.
- 2. Any filesystem labelled **`ARCH_CONFIG`**, which it mounts and
+ 2. Any filesystem labelled **`BOOMSTICK`**, which it mounts and
     unmounts again.
 
 The second one is the usual case. archiso boots with `copytoram=auto`:
@@ -372,8 +372,8 @@ runs there is no `bootmnt` left.
 The label is therefore load-bearing. Relabel a stick's partition and,
 on any machine that copies to RAM, the live system boots unconfigured.
 It also means the configuration doesn't have to be on the stick you
-booted: a second USB stick formatted FAT32 and labelled `ARCH_CONFIG`
-with `archiso-config/` on it works too (copy
+booted: a second USB stick formatted FAT32 and labelled `BOOMSTICK`
+with `boomstick/` on it works too (copy
 [`config-templates/`](config-templates) to start from). Don't have two
 of them plugged in at once — the first one found wins.
 
@@ -390,10 +390,10 @@ the journal.
 Logging in (over SSH or on the console) shows which image booted:
 
 ```
-      /\         arch-iso
-     /  \        --------
+      /\         boomstick
+     /  \        ---------
     /\   \       OS       Arch Linux ARM (aarch64)
-   /      \      Image    arch-rpi5 2026.10.25
+   /      \      Image    boomstick-rpi5 2026.10.25
   /   ,,   \     Kernel   6.18.58-1-rpi-16k
  /   |  |   \    Host     Raspberry Pi 500 Rev 1.0
 /_-''    ''-_\   CPU      Cortex-A76 (4 cores)
@@ -401,17 +401,17 @@ Logging in (over SSH or on the console) shows which image booted:
                  Docs     https://archlinuxarm.org/wiki
 
 Install Arch Linux with `archinstall`, or run `Installation_guide` for the guide.
-Configuration loaded from the stick: journalctl -u arch-iso-config
+Configuration loaded from the stick: journalctl -u boomstick-config
 ```
 
-[`arch-iso-motd`](airootfs/usr/local/bin/arch-iso-motd) renders it from
+[`boomstick-motd`](airootfs/usr/local/bin/boomstick-motd) renders it from
 the booted system's `/etc/os-release`, and
-`arch-iso-motd.service` writes it to `/etc/motd` in early boot, before
+`boomstick-motd.service` writes it to `/etc/motd` in early boot, before
 sshd and the console getty. One overlay builds every image, so nothing
 about the image is baked into the banner: `OS` and `Image` come from the
-live system that actually booted (`arch-iso` on x86_64, `arch-rpi5` on
+live system that actually booted (`boomstick` on x86_64, `boomstick-rpi5` on
 the Pi, which is the useful part on a stick carrying both). Run
-`arch-iso-motd` by hand to print it again.
+`boomstick-motd` by hand to print it again.
 
 ## Raspberry Pi 5
 
@@ -421,9 +421,9 @@ for a USB stick or SD card. It is for installing to a Pi 5 whose NVMe
 drive you can't easily take out: boot the stick, SSH in over the VPN,
 and install to `/dev/nvme0n1` with `pacstrap`.
 
-It is configured exactly like the x86_64 image, from `archiso-config/`
+It is configured exactly like the x86_64 image, from `boomstick/`
 on its FAT32 partition. Two sticks made from the same configuration are
-both "the arch-iso installer" on your VPN, but each generates its own
+both "the boomstick installer" on your VPN, but each generates its own
 SSH host keys on first boot. Don't boot two at once: they would fight
 over the WireGuard peer address.
 
@@ -450,13 +450,13 @@ just inspect
 On an arm64 host, the first build downloads the Arch Linux ARM rootfs
 (about 830 MB), checks its signature, and imports it as the
 `localhost/archlinuxarm` Podman image for the build container. The
-image is written to `out/arch-rpi5-<date>-aarch64.img` (the date is
+image is written to `out/boomstick-rpi5-<date>-aarch64.img` (the date is
 UTC). Write it to a USB stick or SD card (this erases it). On macOS,
 find the disk with `diskutil list`:
 
 ```
 diskutil unmountDisk /dev/diskN
-sudo dd if=out/arch-rpi5-<date>-aarch64.img of=/dev/rdiskN bs=4m
+sudo dd if=out/boomstick-rpi5-<date>-aarch64.img of=/dev/rdiskN bs=4m
 ```
 
 To boot the stick ahead of the NVMe, set the Pi's boot order (SD, then
@@ -494,7 +494,7 @@ What's different from the x86_64 image:
 ## One stick for both (x86_64 + Raspberry Pi 5)
 
 `just build-usb` builds one disk image that boots **x86_64 PCs (UEFI)**
-and the **Raspberry Pi 5**, as `out/arch-usb-<date>-x86_64+rpi5.img`.
+and the **Raspberry Pi 5**, as `out/boomstick-usb-<date>-x86_64+rpi5.img`.
 It builds an x86_64 ISO first, then the Pi image with that ISO's UEFI
 boot files and live system merged into its FAT32 partition. The ISO is
 only an intermediate — that is where systemd-boot and the x86_64 kernel
@@ -507,7 +507,7 @@ colliding:
 config.txt cmdline.txt kernel8.img initramfs-linux.img *.dtb overlays/  # Pi 5 firmware
 EFI/BOOT/BOOTx64.EFI loader/ arch/boot/x86_64/                          # x86_64 UEFI (systemd-boot)
 arch/x86_64/airootfs.sfs  arch/aarch64/airootfs.sfs                     # the two live systems
-archiso-config/                                                         # your configuration
+boomstick/                                                              # your configuration
 boot/<uuid>.uuid                                                        # how each finds the stick
 ```
 
@@ -524,7 +524,7 @@ Limits:
    UEFI firmware is meant to boot from an EFI System Partition (type
    `0xef`), but almost all firmware also boots a FAT32 USB stick with
    `EFI/BOOT/BOOTx64.EFI`; a strict one may not.
- * Both systems read the same `archiso-config/`, and so present the
+ * Both systems read the same `boomstick/`, and so present the
    same SSH host keys and the same WireGuard address.
 
 ## Building for the other architecture
@@ -575,7 +575,7 @@ next one. Every step reads `/root/arch/host.env` rather than shell
 variables, is safe to run again, and echoes each command it runs in
 the book's words. Erasing the disk asks you to type the hostname.
 `setup host --from <git URL | file | name>` starts from an existing
-host repo, or from `archiso-config/hosts/<name>.env` on the stick;
+host repo, or from `boomstick/hosts/<name>.env` on the stick;
 `setup disk --mount` mounts an existing layout without formatting, for
 rescue or to finish a half-done install.
 
@@ -596,7 +596,7 @@ needs `qemu` (`brew install qemu` on macOS); on Apple Silicon the VM is
 emulated, so expect it to take a while.
 
 `just provision` also copies `setup` onto the config partition as
-`archiso-config/bin/setup`, and the live system uses that copy in place
+`boomstick/bin/setup`, and the live system uses that copy in place
 of the one in the image, so a fix to the installer reaches a stick
 without a rebuild.
 
@@ -632,7 +632,7 @@ image a secret too, so don't publish a provisioned one).
 `--privileged`) with this repo bind-mounted. Inside, it copies archiso's
 stock `releng` profile, lays [`airootfs/`](airootfs) on top, and runs
 `mkarchiso`. The result is packed into an MBR disk image with a single
-FAT32 partition holding the live system and the `archiso-config/`
+FAT32 partition holding the live system and the `boomstick/`
 templates. No secret is involved at any point, so the build is
 reproducible by anyone and its output is safe to share. Every step,
 decision and problem along the way is recorded in [LOG.md](LOG.md).
@@ -641,7 +641,7 @@ decision and problem along the way is recorded in [LOG.md](LOG.md).
 airootfs/          # files added to the live system
 build.sh           # build (host side starts the container)
 config.sh          # creates secrets/ templates from config-templates/
-config-templates/  # the archiso-config/ skeleton put on every image
+config-templates/  # the boomstick/ skeleton put on every image
 inspect.sh         # checks a built image
 packages.extra     # packages added to releng's list
 packages.rpi5      # rpi5 changes to releng's packages.aarch64

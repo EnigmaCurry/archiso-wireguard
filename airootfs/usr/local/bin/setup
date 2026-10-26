@@ -40,10 +40,10 @@ set -euo pipefail
 HOST_REPO=${HOST_REPO:-/root/arch}
 HOST_FILE=${HOST_REPO}/host.env
 TARGET=${TARGET:-/mnt}
-# The config partition (see arch-iso-config) and where host files for
+# The config partition (see boomstick-config) and where host files for
 # `setup host --from NAME` live on it.
-CONFIG_LABEL=${CONFIG_LABEL:-ARCH_CONFIG}
-CONFIG_DIR=${CONFIG_DIR:-archiso-config}
+CONFIG_LABEL=${CONFIG_LABEL:-BOOMSTICK}
+CONFIG_DIR=${CONFIG_DIR:-boomstick}
 CRYPT_NAME=cryptroot
 SUBVOLS=(@ @home @snapshots @log @pkg @swap @nix)
 MOUNT_OPTS="noatime,compress=zstd:1"
@@ -233,7 +233,7 @@ part() {
 
 load_host() {
     [[ -f ${HOST_FILE} ]] || die "no ${HOST_FILE}: run 'setup host' first"
-    # bash sets HOSTNAME itself (to the live system's, arch-iso).
+    # bash sets HOSTNAME itself (to the live system's, boomstick).
     unset HOSTNAME
     # shellcheck source=/dev/null
     source "${HOST_FILE}"
@@ -687,7 +687,7 @@ commit_repo() {
     [[ -d ${repo}/.git ]] || git -C "${repo}" init -q -b main
     git -C "${repo}" add -A
     git -C "${repo}" diff --cached --quiet && return 0
-    git -C "${repo}" -c user.name=setup -c user.email="root@${HOSTNAME:-arch-iso}" \
+    git -C "${repo}" -c user.name=setup -c user.email="root@${HOSTNAME:-boomstick}" \
         commit -q -m "${message}"
     msg "Committed: ${message}"
 }

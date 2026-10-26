@@ -23,7 +23,7 @@ build-rpi5:
 build-usb:
     ./build.sh usb
 
-# Copy secrets/ onto a stick's config partition (default: the mounted ARCH_CONFIG stick)
+# Copy secrets/ onto a stick's config partition (default: the mounted BOOMSTICK stick)
 provision *target:
     ./provision.sh {{target}}
 

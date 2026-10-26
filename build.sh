@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build the arch-iso live image. The image is generic: it holds no
+# Build the boomstick live image. The image is generic: it holds no
 # secrets, and is configured after it is written to a USB stick, from an
-# archiso-config/ directory on the stick's FAT32 partition (see
-# provision.sh and airootfs/usr/local/bin/arch-iso-config).
+# boomstick/ directory on the stick's FAT32 partition (see
+# provision.sh and airootfs/usr/local/bin/boomstick-config).
 #
 # Usage: build.sh [TARGET]
 #   x86_64  (default) a USB disk image for x86_64 PCs (UEFI)
@@ -45,7 +45,7 @@ STAGE="${OUT}/.iso-stage"
 # Configuration templates copied onto the image's FAT partition, for the
 # user to fill in after writing the stick.
 TEMPLATES="${ROOT}/config-templates"
-CONFIG_DIR=archiso-config
+CONFIG_DIR=boomstick
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -69,8 +69,8 @@ ALARM_SIGNING_KEY=68B3537F39A313B3E574D06777193F152BDBE6A6
 ARCHISO_PKG_URL=https://archlinux.org/packages/extra/any/archiso/download/
 # FAT volume label of the boot partition. The live system falls back to
 # searching for this label when it did not boot from the partition
-# holding archiso-config/ (an ISO, or a copytoram boot).
-FAT_LABEL=ARCH_CONFIG
+# holding boomstick/ (an ISO, or a copytoram boot).
+FAT_LABEL=BOOMSTICK
 # Arch Linux mirror for x86_64 packages when building on arm64.
 ARCH_MIRROR='https://geo.mirror.pkgbuild.com/$repo/os/$arch'
 
@@ -124,12 +124,12 @@ stage_profile() {
     cat >>"${PROFILE}/profiledef.sh" <<'EOF'
 
 # --- boomstick ---
-iso_name="arch-iso"
+iso_name="boomstick"
 # mkarchiso defaults to the build host's architecture.
 arch="x86_64"
-file_permissions["/usr/local/bin/arch-iso-webhook"]="0:0:755"
-file_permissions["/usr/local/bin/arch-iso-config"]="0:0:755"
-file_permissions["/usr/local/bin/arch-iso-motd"]="0:0:755"
+file_permissions["/usr/local/bin/boomstick-webhook"]="0:0:755"
+file_permissions["/usr/local/bin/boomstick-config"]="0:0:755"
+file_permissions["/usr/local/bin/boomstick-motd"]="0:0:755"
 file_permissions["/usr/local/bin/setup"]="0:0:755"
 EOF
 }
@@ -173,13 +173,13 @@ stage_profile_rpi5() {
     cat >>"${PROFILE}/profiledef.sh" <<'EOF'
 
 # --- boomstick ---
-iso_name="arch-rpi5"
+iso_name="boomstick-rpi5"
 arch="aarch64"
 # The Pi firmware boots the FAT partition directly: no boot loader.
 bootmodes=()
-file_permissions["/usr/local/bin/arch-iso-webhook"]="0:0:755"
-file_permissions["/usr/local/bin/arch-iso-config"]="0:0:755"
-file_permissions["/usr/local/bin/arch-iso-motd"]="0:0:755"
+file_permissions["/usr/local/bin/boomstick-webhook"]="0:0:755"
+file_permissions["/usr/local/bin/boomstick-config"]="0:0:755"
+file_permissions["/usr/local/bin/boomstick-motd"]="0:0:755"
 file_permissions["/usr/local/bin/setup"]="0:0:755"
 EOF
 }
@@ -353,7 +353,7 @@ make_disk_image() {
     name=$(declare -A file_permissions && source "${PROFILE}/profiledef.sh" \
         && echo "${iso_name}-${iso_version}-${suffix}.img")
     # usb builds on the rpi5 profile, but it is not a Pi-only image.
-    [[ ${TARGET} == usb ]] && name=${name/arch-rpi5-/arch-usb-}
+    [[ ${TARGET} == usb ]] && name=${name/boomstick-rpi5-/boomstick-usb-}
     disk=${BUILD}/${name}
 
     mkdir -p "${fat}"

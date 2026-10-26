@@ -1,15 +1,15 @@
 [Unit]
 Description=Report addresses and WireGuard status to a webhook
 # Only present when the config partition has a WEBHOOK_URL
-# (see arch-iso-config.service).
-ConditionPathExists=/etc/arch-iso/webhook.env
+# (see boomstick-config.service).
+ConditionPathExists=/etc/boomstick/webhook.env
 Wants=network-online.target
 After=network-online.target wg-quick@wg0.service
 
 [Service]
 Type=oneshot
-EnvironmentFile=/etc/arch-iso/webhook.env
-ExecStart=/usr/local/bin/arch-iso-webhook
+EnvironmentFile=/etc/boomstick/webhook.env
+ExecStart=/usr/local/bin/boomstick-webhook
 
 [Install]
 WantedBy=multi-user.target

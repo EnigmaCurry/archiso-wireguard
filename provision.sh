@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Copy secrets/ onto a stick's config partition, as archiso-config/.
+# Copy secrets/ onto a stick's config partition, as boomstick/.
 #
 # Usage: provision.sh [TARGET]
 #   (default)      the config partition of a stick, found by its
-#                  ARCH_CONFIG filesystem label and mounted with
+#                  BOOMSTICK filesystem label and mounted with
 #                  udisksctl if it isn't mounted already
 #   <directory>    an already-mounted config partition, e.g.
-#                  /run/media/you/ARCH_CONFIG
+#                  /run/media/you/BOOMSTICK
 #   /dev/sdX       a stick (or /dev/sdX1, its FAT partition), unmounted
 #   <image>.img    a built image, before it is written to a stick. The
 #                  image then contains your secrets and is no longer
@@ -26,10 +26,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # BOOMSTICK_SECRETS: another secrets/ directory (test-vm.sh uses one).
 SECRETS="${BOOMSTICK_SECRETS:-${ROOT}/secrets}"
 TEMPLATES="${ROOT}/config-templates"
-CONFIG_DIR=archiso-config
+CONFIG_DIR=boomstick
 # Filesystem label build.sh gives the config partition, and how a
 # written stick is found again here.
-FAT_LABEL=${FAT_LABEL:-ARCH_CONFIG}
+FAT_LABEL=${FAT_LABEL:-BOOMSTICK}
 
 # Set when we mounted the stick ourselves, so we can unmount it again.
 MOUNTED_DEV=
@@ -115,7 +115,7 @@ find_target() {
 }
 
 # The installer, copied as bin/setup so that a fix to it reaches a
-# stick with 'just provision' rather than a rebuild. arch-iso-config
+# stick with 'just provision' rather than a rebuild. boomstick-config
 # installs it over the copy baked into the image.
 SETUP=${ROOT}/airootfs/usr/local/bin/setup
 
@@ -128,7 +128,7 @@ sources() {
 }
 
 # Target is a mounted filesystem: plain cp. Accepts either the partition
-# root or the archiso-config/ directory inside it.
+# root or the boomstick/ directory inside it.
 provision_dir() {
     local dest=$1 src rel
     [[ $(basename "${dest}") == "${CONFIG_DIR}" ]] || dest="${dest}/${CONFIG_DIR}"
@@ -170,7 +170,7 @@ provision_mtools() {
     command -v podman >/dev/null || die "podman is not installed"
     target=$(realpath "${target}")
     if [[ ${target} == *.iso ]]; then
-        die "an ISO is read-only: configure it from a second filesystem labelled ARCH_CONFIG, or use just build-usb"
+        die "an ISO is read-only: configure it from a second filesystem labelled BOOMSTICK, or use just build-usb"
     fi
     if [[ -b ${target} ]]; then
         [[ -w ${target} ]] || die "no write permission on ${target} (try: sudo $0 ${target})"

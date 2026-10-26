@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Show what this repo put into a built image: its name, hostname, the
 # owner/mode of every overlay file (never their contents), and the
-# config partition's archiso-config/ listing. Fails if the image
+# config partition's boomstick/ listing. Fails if the image
 # contains any secret, which would make it unsafe to publish: images
 # are generic and are configured afterwards, on the stick.
 #
@@ -16,7 +16,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="${ROOT}/out"
-CONFIG_DIR=archiso-config
+CONFIG_DIR=boomstick
 
 # Nothing may live under these paths: they are filled in at boot from
 # the config partition, and a file here means a secret was baked in.
@@ -24,23 +24,23 @@ SECRET_PATHS=(
     etc/wireguard
     var/lib/iwd
     root/.ssh
-    etc/arch-iso
+    etc/boomstick
     'etc/ssh/ssh_host_*_key'
 )
 # Overlay files to list.
 OVERLAY_PATHS=(
     etc/hostname
     etc/ssh/sshd_config.d
-    usr/local/bin/arch-iso-config
-    usr/local/bin/arch-iso-webhook
-    usr/local/bin/arch-iso-motd
+    usr/local/bin/boomstick-config
+    usr/local/bin/boomstick-webhook
+    usr/local/bin/boomstick-motd
     usr/local/bin/setup
-    etc/systemd/system/arch-iso-config.service
-    etc/systemd/system/sysinit.target.wants/arch-iso-config.service
-    etc/systemd/system/arch-iso-motd.service
-    etc/systemd/system/sysinit.target.wants/arch-iso-motd.service
-    etc/systemd/system/arch-iso-webhook.service
-    etc/systemd/system/multi-user.target.wants/arch-iso-webhook.service
+    etc/systemd/system/boomstick-config.service
+    etc/systemd/system/sysinit.target.wants/boomstick-config.service
+    etc/systemd/system/boomstick-motd.service
+    etc/systemd/system/sysinit.target.wants/boomstick-motd.service
+    etc/systemd/system/boomstick-webhook.service
+    etc/systemd/system/multi-user.target.wants/boomstick-webhook.service
     'etc/systemd/system/multi-user.target.wants/wg-quick@*'
     'etc/systemd/system/wg-quick@wg0.service.d'
 )
