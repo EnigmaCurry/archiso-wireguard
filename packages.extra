@@ -1,2 +1,4 @@
 # Appended to releng's packages.x86_64
 wireguard-tools
+# setup host --from <git URL>, and the host repo setup creates
+git

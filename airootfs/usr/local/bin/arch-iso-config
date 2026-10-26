@@ -163,6 +163,15 @@ save_host_keys() {
     fi
 }
 
+# A newer installer from the config partition ('just provision' copies
+# it there), over the one baked into the image.
+install_setup() {
+    if [[ -f ${SRC}/bin/setup ]]; then
+        install -m 755 "${SRC}/bin/setup" /usr/local/bin/setup \
+            && msg "setup: installed from ${CONFIG_DIR}/bin/setup"
+    fi
+}
+
 # Host keys from the config partition, generating and saving any that
 # are missing. Done before sshd (and before sshdgenkeys.service, which
 # would otherwise make its own throwaway keys).
@@ -203,6 +212,7 @@ main() {
     install_wireguard
     install_authorized_keys
     install_webhook
+    install_setup
     install_host_keys
     if ((FALLBACK_MOUNTED)); then
         umount "${FALLBACK_MNT}" || warn "could not unmount ${FALLBACK_MNT}"

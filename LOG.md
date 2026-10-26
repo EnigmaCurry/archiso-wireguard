@@ -1060,3 +1060,58 @@ logo built around the Arch "A" were both combined marks, so:
    (512x512): a USB stick with a rocket plume, WiFi, terminal, VPN
    shield and mini-PC icons, again without the Arch, WireGuard or
    Raspberry Pi marks.
+
+## setup: the install as a command (2026-10-26)
+
+The Arch Workstation book installs a machine from this stick in about
+ninety copy-pasted blocks. `airootfs/usr/local/bin/setup` runs the same
+steps, in the same order, from a host file:
+
+ * `setup host` asks for the hostname, disk, LUKS, swap size, time
+   zone, locale, keymap and whether `admin` gets passwordless sudo,
+   and writes them to `/root/arch/host.env`. It seeds the rest of a
+   *host repo* there (`packages.txt`, `units.txt`, `etc/` with the
+   `.network` files, the sshd hardening drop-in and the sudoers drop-in,
+   and `authorized_keys` copied from the stick) and commits it.
+   `--from` takes a git URL, a host file, or a name looked up as
+   `archiso-config/hosts/<name>.env` on the config partition.
+ * The disk is recorded by its `/dev/disk/by-id/` name. The disk the
+   stick is on (found by the `ARCH_CONFIG` label and by
+   `/run/archiso/bootmnt`) is never offered and never accepted.
+ * `setup disk` shows a review, needs the hostname typed (or
+   `--confirm-wipe HOSTNAME`), then runs sgdisk, `wipefs` on the new
+   partitions, optional LUKS2, mkfs, the six subvolumes, the mounts and
+   the swapfile. The `wipefs` is not in the book: without it, a
+   reinstall over the same layout finds the old btrfs signature where
+   the new partition starts and `mkfs.btrfs` refuses. If `/mnt` already
+   has the layout it does nothing; `--mount` re-mounts an existing one.
+ * `setup install` picks the kernel and microcode from the hardware as
+   the book does, adds `packages.txt`, and runs pacstrap (dropping `-K`
+   on a Pi stick that did not ship Arch Linux ARM's keyring), writes
+   rather than appends the fstab, sets the locale and hostname, adds
+   `sd-encrypt` when encrypted, writes the systemd-boot entry or the
+   Pi's `cmdline.txt` from UUIDs it reads, applies the host repo's
+   `etc/` and `units.txt` into `/mnt`, links `resolv.conf` and copies
+   the iwd networks from outside the chroot, creates `admin` and
+   `user`, checks sudoers with `visudo -c`, installs `authorized_keys`,
+   asks for the three passwords (skipping any already set), and copies
+   the host repo to `/home/admin/arch`.
+ * `setup check` is the book's pre-flight check, judged rather than
+   printed: any failing line makes it exit non-zero, and
+   `setup reboot` will not unmount or reboot until it passes.
+ * git keeps no file modes, so `apply` sets them by place (sudoers
+   drop-ins 0440, everything else 0644).
+ * `git` is added to `packages.extra`, for `--from <git URL>` and the
+   host repo.
+ * `just provision` copies `setup` to `archiso-config/bin/setup`, and
+   `arch-iso-config` installs that over the copy in the image, so the
+   installer can be updated without rebuilding the image.
+
+Tested so far: `bash -n` and shellcheck are clean. `setup disk` was run
+against a 12 GB loopback disk in an Ubuntu container (fresh, re-run as
+a no-op, unmounted and `--mount`ed again), with two substitutions the
+container forced: ext4 for the ESP (no vfat module) and a no-op
+`udevadm`. LUKS formatted but could not be opened there (no
+device-mapper). `setup host` was exercised for the files it writes;
+`setup install`, `check` and `reboot` have not been run yet, because
+they need an Arch live system.

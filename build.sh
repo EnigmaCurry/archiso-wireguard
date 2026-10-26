@@ -129,6 +129,7 @@ iso_name="arch-iso"
 arch="x86_64"
 file_permissions["/usr/local/bin/arch-iso-webhook"]="0:0:755"
 file_permissions["/usr/local/bin/arch-iso-config"]="0:0:755"
+file_permissions["/usr/local/bin/setup"]="0:0:755"
 EOF
 }
 
@@ -177,6 +178,7 @@ arch="aarch64"
 bootmodes=()
 file_permissions["/usr/local/bin/arch-iso-webhook"]="0:0:755"
 file_permissions["/usr/local/bin/arch-iso-config"]="0:0:755"
+file_permissions["/usr/local/bin/setup"]="0:0:755"
 EOF
 }
 

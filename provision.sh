@@ -113,11 +113,17 @@ find_target() {
     echo "Mounted ${dev} at ${TARGET}"
 }
 
-# What gets copied: everything in secrets/, plus the README for whoever
-# plugs the stick into another machine.
+# The installer, copied as bin/setup so that a fix to it reaches a
+# stick with 'just provision' rather than a rebuild. arch-iso-config
+# installs it over the copy baked into the image.
+SETUP=${ROOT}/airootfs/usr/local/bin/setup
+
+# What gets copied: everything in secrets/, the README for whoever
+# plugs the stick into another machine, and the installer.
 sources() {
     find "${SECRETS}" -mindepth 1 -not -name '*.example'
     echo "${TEMPLATES}/README.txt"
+    echo "${SETUP}"
 }
 
 # Target is a mounted filesystem: plain cp. Accepts either the partition
@@ -129,9 +135,11 @@ provision_dir() {
     while IFS= read -r src; do
         rel=${src#"${SECRETS}"/}
         rel=${rel#"${TEMPLATES}"/}
+        [[ ${src} == "${SETUP}" ]] && rel=bin/setup
         if [[ -d ${src} ]]; then
             mkdir -p "${dest}/${rel}"
         else
+            mkdir -p "$(dirname "${dest}/${rel}")"
             cp "${src}" "${dest}/${rel}"
             echo "  ${CONFIG_DIR}/${rel}"
         fi
@@ -175,6 +183,7 @@ provision_mtools() {
         --volume "${ROOT}/provision.sh:/provision.sh:ro" \
         --volume "${SECRETS}:/secrets:ro" \
         --volume "${TEMPLATES}:/templates:ro" \
+        --volume "${SETUP}:/setup:ro" \
         --env BOOMSTICK_IN_CONTAINER=1 \
         "$(host_image)" /provision.sh /target
 }
@@ -204,6 +213,7 @@ provision_in_container() {
     while IFS= read -r src; do
         rel=${src#/secrets/}
         rel=${rel#/templates/}
+        [[ ${src} == /setup ]] && rel=bin/setup
         if [[ -d ${src} ]]; then
             mmd -i "${img}" "::/${CONFIG_DIR}/${rel}" 2>/dev/null || true
             continue
@@ -216,7 +226,7 @@ provision_in_container() {
         fi
         mcopy -o -i "${img}" "${src}" "::/${CONFIG_DIR}/${rel}"
         echo "  ${CONFIG_DIR}/${rel}"
-    done < <( { find /secrets -mindepth 1 -not -name '*.example'; echo /templates/README.txt; } | sort)
+    done < <( { find /secrets -mindepth 1 -not -name '*.example'; echo /templates/README.txt; echo /setup; } | sort)
     sync
     echo
     echo "Wrote ${CONFIG_DIR}/ to the target's FAT partition."

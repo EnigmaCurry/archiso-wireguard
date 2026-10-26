@@ -1,0 +1,1016 @@
+#!/usr/bin/env bash
+# Install Arch Linux from this live system onto a local disk.
+#
+# setup is the install from the Arch Workstation book
+# (https://book.rymcg.tech/arch-workstation/) turned into a program.
+# Every step is one the book documents by hand, run in the same order
+# and echoed in the same words, so its output can be checked against
+# the book.
+#
+# Usage: setup [--yes] [COMMAND [ARGS]]
+#   (no command)       show which steps are done and offer the next one
+#   host [--from SRC]  describe the machine: write the host repo, /root/arch
+#   disk [--mount]     partition, (encrypt,) format, mount under /mnt, swap
+#   install            install the base system, make it boot, network,
+#                      accounts, SSH, then run the check
+#   check              the pre-flight check for the system under /mnt
+#   reboot             check, unmount and reboot (refuses if a check fails)
+#
+#   --yes              answer yes to review screens (never to erasing a
+#                      disk: that needs --confirm-wipe HOSTNAME)
+#
+# Everything a step needs is read from the host repo, never from shell
+# variables, so a dropped SSH session loses nothing: reconnect and run
+# the step again. Every step is safe to run again; the one that is not
+# (erasing the disk) asks you to type the hostname.
+#
+# The host repo holds no secrets. Passwords are asked for during
+# install and stored nowhere else; WiFi passphrases are copied from the
+# live system into the target, never into the repo.
+set -euo pipefail
+
+HOST_REPO=${HOST_REPO:-/root/arch}
+HOST_FILE=${HOST_REPO}/host.env
+TARGET=${TARGET:-/mnt}
+# The config partition (see arch-iso-config) and where host files for
+# `setup host --from NAME` live on it.
+CONFIG_LABEL=${CONFIG_LABEL:-ARCH_CONFIG}
+CONFIG_DIR=${CONFIG_DIR:-archiso-config}
+CRYPT_NAME=cryptroot
+SUBVOLS=(@ @home @snapshots @log @pkg @swap)
+MOUNT_OPTS="noatime,compress=zstd:1"
+ADMIN="admin"
+DAILY=user
+# Arch Linux ARM's build key: untrusted on early BOOMSTICK Pi images.
+ALARM_KEY=68B3537F39A313B3E574D06777193F152BDBE6A6
+
+YES=0
+CONFIRM_WIPE=
+# Whether this stick shipped Arch Linux ARM's keyring (see install_packages).
+ALARM_SHIPPED=1
+
+# --- output -----------------------------------------------------------------
+
+msg()  { echo "$*"; }
+warn() { echo "WARNING: $*" >&2; }
+die()  { echo "ERROR: $*" >&2; exit 1; }
+ok()   { printf '✓ %-10s %s\n' "$1" "$2"; }
+bad()  { printf '✗ %-10s %s\n' "$1" "$2"; }
+
+# Echo a command in the book's words, then run it.
+run() { printf '+ %s\n' "$*" >&2; "$@"; }
+# The same, inside the target.
+in_target() { run arch-chroot "${TARGET}" "$@"; }
+# Inside the target, quietly: for questions rather than changes.
+ask_target() { arch-chroot "${TARGET}" "$@"; }
+
+# Keys in an authorized_keys file, not counting comments.
+key_count() {
+    local n
+    n=$(grep -cvE '^\s*(#|$)' "$1" 2>/dev/null) || true
+    echo "${n:-0}"
+}
+
+section() { printf '\n== %s ==\n' "$*"; }
+
+review() {
+    local line
+    echo
+    echo "================ Review ================="
+    for line in "$@"; do printf '%s\n' "${line}"; done
+    echo "========================================="
+    echo
+}
+
+confirm() {
+    local answer
+    ((YES)) && return 0
+    read -rp "? $1 (Y/n) " answer
+    [[ -z ${answer} || ${answer} == [yY]* ]]
+}
+
+# prompt VAR "Question" default
+prompt() {
+    local __var=$1 question=$2 default=${3:-} answer
+    read -rep "? ${question} " -i "${default}" answer
+    printf -v "${__var}" '%s' "${answer}"
+}
+
+# --- the machine ------------------------------------------------------------
+
+arch() { uname -m; }
+
+is_rpi5() {
+    [[ $(arch) == aarch64 ]] && grep -qa bcm2712 /proc/device-tree/compatible 2>/dev/null
+}
+
+machine_name() {
+    if is_rpi5; then
+        echo "Raspberry Pi 5 (aarch64, bcm2712)"
+    elif [[ $(arch) == x86_64 ]]; then
+        if [[ -e /sys/firmware/efi/fw_platform_size ]]; then
+            echo "x86_64 PC, UEFI"
+        else
+            echo "x86_64 PC, legacy BIOS (unsupported)"
+        fi
+    else
+        echo "$(arch), unrecognised board"
+    fi
+}
+
+# The packages every install gets, by hardware: the book's PKGS block.
+base_packages() {
+    local pkgs=(base btrfs-progs cryptsetup sudo openssh iwd vim)
+    case $(arch) in
+        x86_64)
+            pkgs+=(linux linux-firmware)
+            case $(grep -m1 '^vendor_id' /proc/cpuinfo) in
+                *GenuineIntel*) pkgs+=(intel-ucode) ;;
+                *AuthenticAMD*) pkgs+=(amd-ucode) ;;
+            esac
+            ;;
+        aarch64)
+            is_rpi5 || die "unrecognised aarch64 board: setup only knows the Raspberry Pi 5"
+            pkgs+=(linux-rpi-16k firmware-raspberrypi linux-firmware)
+            ;;
+        *) die "unsupported architecture: $(arch)" ;;
+    esac
+    echo "${pkgs[@]}"
+}
+
+# The packages listed in the host repo, without comments.
+repo_packages() {
+    [[ -f ${HOST_REPO}/packages.txt ]] || return 0
+    sed -e 's/#.*//' -e '/^\s*$/d' "${HOST_REPO}/packages.txt" | tr -s ' \n' '\n' | sed '/^$/d'
+}
+
+repo_units() {
+    [[ -f ${HOST_REPO}/units.txt ]] || return 0
+    sed -e 's/#.*//' -e '/^\s*$/d' "${HOST_REPO}/units.txt" | tr -d ' '
+}
+
+# The whole disk the BOOMSTICK is on, or empty: never offered, never
+# accepted. Found by the config partition's label, and by archiso's
+# boot mount when it is still there (no copytoram).
+stick_disks() {
+    local dev
+    dev=$(blkid -L "${CONFIG_LABEL}" 2>/dev/null) || true
+    [[ -n ${dev} ]] && lsblk -dpno PKNAME "${dev}" 2>/dev/null
+    dev=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null) || true
+    [[ -n ${dev} ]] && lsblk -dpno PKNAME "${dev}" 2>/dev/null
+    return 0
+}
+
+is_stick() {
+    local disk=$1 s
+    disk=$(realpath -m "${disk}")
+    while read -r s; do
+        [[ -n ${s} && ${s} == "${disk}" ]] && return 0
+    done < <(stick_disks)
+    return 1
+}
+
+# A stable name for a disk: its /dev/disk/by-id/ link, which belongs to
+# the drive rather than to the order the kernel found it in. wwn- and
+# nvme-eui. names are stable too, but unreadable, so prefer the others.
+by_id() {
+    local disk link best=
+    disk=$(realpath "$1")
+    for link in /dev/disk/by-id/*; do
+        [[ ${link} == *-part[0-9]* ]] && continue
+        [[ $(realpath "${link}") == "${disk}" ]] || continue
+        case ${link##*/} in
+            wwn-*|nvme-eui.*) [[ -z ${best} ]] && best=${link} ;;
+            *) best=${link}; break ;;
+        esac
+    done
+    echo "${best:-${disk}}"
+}
+
+# Disks setup may install to: whole disks, not the stick, not virtual.
+candidate_disks() {
+    local line NAME SIZE TYPE TRAN MODEL
+    # -P prints KEY="value" pairs, so an empty TRAN or a MODEL with
+    # spaces cannot shift the columns.
+    while read -r line; do
+        eval "${line}"
+        [[ ${TYPE} == disk ]] || continue
+        case ${NAME} in /dev/loop*|/dev/zram*|/dev/sr*|/dev/ram*) continue ;; esac
+        is_stick "${NAME}" && continue
+        printf '%s\t%s\t%s\t%s\n' "${NAME}" "${SIZE}" "${TRAN:--}" "${MODEL:-}"
+    done < <(lsblk -dpnP -o NAME,SIZE,TYPE,TRAN,MODEL)
+}
+
+# Partition N of DISK. A by-id disk has udev's -partN links; otherwise
+# NVMe, SD and eMMC names take a p (nvme0n1p1), SATA and USB do not.
+part() {
+    local disk=$1 n=$2 real
+    if [[ -e ${disk}-part${n} ]]; then
+        realpath "${disk}-part${n}"
+        return
+    fi
+    real=$(realpath -m "${disk}")
+    case ${real} in *[0-9]) echo "${real}p${n}" ;; *) echo "${real}${n}" ;; esac
+}
+
+# --- the host repo ----------------------------------------------------------
+
+load_host() {
+    [[ -f ${HOST_FILE} ]] || die "no ${HOST_FILE}: run 'setup host' first"
+    # bash sets HOSTNAME itself (to the live system's, arch-iso).
+    unset HOSTNAME
+    # shellcheck source=/dev/null
+    source "${HOST_FILE}"
+    : "${HOSTNAME:?missing from ${HOST_FILE}}" "${DISK:?missing from ${HOST_FILE}}"
+    ENCRYPT=${ENCRYPT:-no}
+    SWAP_SIZE=${SWAP_SIZE:-8g}
+    TIMEZONE=${TIMEZONE:-UTC}
+    LOCALE=${LOCALE:-en_US.UTF-8}
+    KEYMAP=${KEYMAP:-us}
+    ADMIN_NOPASSWD=${ADMIN_NOPASSWD:-yes}
+    ESP=$(part "${DISK}" 1)
+    ROOT=$(part "${DISK}" 2)
+    if [[ ${ENCRYPT} == yes ]]; then
+        ROOTDEV=/dev/mapper/${CRYPT_NAME}
+    else
+        ROOTDEV=${ROOT}
+    fi
+}
+
+write_host_file() {
+    mkdir -p "${HOST_REPO}"
+    cat >"${HOST_FILE}" <<EOF
+# What this machine is. Written by 'setup host'; edit freely, then run
+# 'setup host' again to re-check it. Read by every other setup step.
+HOSTNAME=${HOSTNAME}
+DISK=${DISK}
+ENCRYPT=${ENCRYPT}
+SWAP_SIZE=${SWAP_SIZE}
+TIMEZONE=${TIMEZONE}
+LOCALE=${LOCALE}
+KEYMAP=${KEYMAP}
+ADMIN_NOPASSWD=${ADMIN_NOPASSWD}
+EOF
+    msg "Wrote ${HOST_FILE}"
+}
+
+# Write FILE under the host repo with CONTENT from stdin, unless it
+# exists: the repo is yours once seeded, and setup never overwrites it.
+seed() {
+    local file=${HOST_REPO}/$1
+    if [[ -e ${file} ]]; then
+        cat >/dev/null
+        return
+    fi
+    mkdir -p "$(dirname "${file}")"
+    cat >"${file}"
+    msg "  seeded ${file#"${HOST_REPO}"/}"
+}
+
+seed_repo() {
+    seed packages.txt <<'EOF'
+# Packages to install beyond the base set, which setup picks from the
+# hardware (kernel, firmware, microcode). One or more per line.
+EOF
+    seed units.txt <<'EOF'
+# systemd units to enable in the installed system.
+systemd-networkd
+systemd-resolved
+iwd
+sshd
+EOF
+    seed etc/systemd/network/20-wired.network <<'EOF'
+[Match]
+Name=en*
+
+[Network]
+DHCP=yes
+EOF
+    seed etc/systemd/network/25-wireless.network <<'EOF'
+[Match]
+Name=wl*
+
+[Network]
+DHCP=yes
+EOF
+    seed etc/ssh/sshd_config.d/10-hardening.conf <<'EOF'
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+EOF
+    # Follows ADMIN_NOPASSWD every time, since that is a host.env answer.
+    if [[ ${ADMIN_NOPASSWD} == yes ]]; then
+        seed etc/sudoers.d/10-admin <<EOF
+${ADMIN} ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+    elif [[ -e ${HOST_REPO}/etc/sudoers.d/10-admin ]]; then
+        rm -f "${HOST_REPO}/etc/sudoers.d/10-admin"
+        msg "  removed etc/sudoers.d/10-admin (ADMIN_NOPASSWD=no)"
+    fi
+    if [[ ! -e ${HOST_REPO}/authorized_keys && -s /root/.ssh/authorized_keys ]]; then
+        install -m 0644 /root/.ssh/authorized_keys "${HOST_REPO}/authorized_keys"
+        msg "  seeded authorized_keys ($(key_count "${HOST_REPO}/authorized_keys") key(s) from this stick)"
+    fi
+}
+
+commit_repo() {
+    local repo=$1 message=$2
+    command -v git >/dev/null || { warn "git is not installed: ${repo} is not a git repository yet"; return 0; }
+    [[ -d ${repo}/.git ]] || git -C "${repo}" init -q -b main
+    git -C "${repo}" add -A
+    git -C "${repo}" diff --cached --quiet && return 0
+    git -C "${repo}" -c user.name=setup -c user.email="root@${HOSTNAME:-arch-iso}" \
+        commit -q -m "${message}"
+    msg "Committed: ${message}"
+}
+
+# The config partition, mounted read-only for --from NAME.
+with_config_partition() {
+    local dev mnt
+    if [[ -d /run/archiso/bootmnt/${CONFIG_DIR} ]]; then
+        "$@" "/run/archiso/bootmnt/${CONFIG_DIR}"
+        return
+    fi
+    dev=$(blkid -L "${CONFIG_LABEL}" 2>/dev/null) || die "no ${CONFIG_LABEL} partition found"
+    mnt=$(mktemp -d)
+    mount -o ro "${dev}" "${mnt}"
+    "$@" "${mnt}/${CONFIG_DIR}" || { umount "${mnt}"; return 1; }
+    umount "${mnt}"
+    rmdir "${mnt}"
+}
+
+copy_named_host() {
+    local name=$1 dir=$2
+    [[ -f ${dir}/hosts/${name}.env ]] || die "no ${CONFIG_DIR}/hosts/${name}.env on the config partition"
+    mkdir -p "${HOST_REPO}"
+    install -m 0644 "${dir}/hosts/${name}.env" "${HOST_FILE}"
+    msg "Copied ${CONFIG_DIR}/hosts/${name}.env to ${HOST_FILE}"
+}
+
+# Fill HOST_REPO from an existing source: a git URL, a host.env path, or
+# the name of a host file on the config partition.
+host_from() {
+    local src=$1
+    if [[ -e ${HOST_REPO} && -n $(ls -A "${HOST_REPO}" 2>/dev/null) ]]; then
+        die "${HOST_REPO} already exists: move it aside to start over from ${src}"
+    fi
+    case ${src} in
+        *://*|*@*:*|*.git)
+            command -v git >/dev/null || die "git is not installed on this live system"
+            run git clone "${src}" "${HOST_REPO}"
+            ;;
+        */*|*.env)
+            [[ -f ${src} ]] || die "no such file: ${src}"
+            mkdir -p "${HOST_REPO}"
+            install -m 0644 "${src}" "${HOST_FILE}"
+            ;;
+        *)
+            with_config_partition copy_named_host "${src}"
+            ;;
+    esac
+}
+
+pick_disk() {
+    local current=$1 disks=() line i=1 choice name size tran model
+    mapfile -t disks < <(candidate_disks)
+    ((${#disks[@]})) || die "no disks to install to (the BOOMSTICK itself is never offered)"
+    echo "? Install to which disk?" >&2
+    for line in "${disks[@]}"; do
+        IFS=$'\t' read -r name size tran model <<<"${line}"
+        printf '  %d) %-48s %7s  %-5s %s  (%s)\n' "${i}" "$(by_id "${name}")" "${size}" "${tran}" "${model}" "${name##*/}" >&2
+        ((i++))
+    done
+    while read -r s; do [[ -n ${s} ]] && echo "  (${s}, the BOOMSTICK you booted from, is not offered)" >&2; done < <(stick_disks | sort -u)
+    choice=1
+    for i in "${!disks[@]}"; do
+        IFS=$'\t' read -r name _ <<<"${disks[i]}"
+        [[ -n ${current} && $(realpath "${current}" 2>/dev/null) == "${name}" ]] && choice=$((i + 1))
+    done
+    while :; do
+        read -rep "? Number (${choice}) " -i "" i
+        i=${i:-${choice}}
+        [[ ${i} =~ ^[0-9]+$ ]] && ((i >= 1 && i <= ${#disks[@]})) && break
+        echo "  pick 1 to ${#disks[@]}" >&2
+    done
+    IFS=$'\t' read -r name _ <<<"${disks[i - 1]}"
+    by_id "${name}"
+}
+
+cmd_host() {
+    local from='' extra
+    while (($#)); do
+        case $1 in
+            --from) from=${2:?--from needs a git URL, a file or a host name}; shift 2 ;;
+            *) die "setup host: unknown argument $1" ;;
+        esac
+    done
+    section "Describe this machine"
+    msg "Machine: $(machine_name)"
+    [[ -n ${from} ]] && host_from "${from}"
+
+    # Defaults: the current host file if there is one, else the book's.
+    HOSTNAME=archlinux DISK='' ENCRYPT=no SWAP_SIZE=8g LOCALE=en_US.UTF-8 KEYMAP=us ADMIN_NOPASSWD=yes
+    TIMEZONE=$(timedatectl show -p Timezone --value 2>/dev/null || echo UTC)
+    # shellcheck source=/dev/null
+    [[ -f ${HOST_FILE} ]] && source "${HOST_FILE}"
+
+    if [[ -n ${from} ]]; then
+        # Everything was answered before, except the disk: a by-id name is
+        # one physical drive, and a reinstall is usually onto a new one.
+        if [[ -n ${DISK} && -e ${DISK} ]] && ! is_stick "${DISK}"; then
+            msg "Disk: ${DISK} (from the host file, present on this machine)"
+        else
+            [[ -n ${DISK} ]] && msg "Disk ${DISK} from the host file is not on this machine: pick again."
+            DISK=$(pick_disk "")
+        fi
+    else
+        while prompt HOSTNAME "Hostname" "${HOSTNAME}"; do
+            [[ ${HOSTNAME} =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] && break
+            echo "  letters, digits and -, at most 63 characters" >&2
+        done
+        DISK=$(pick_disk "${DISK}")
+        if is_rpi5; then
+            warn "a headless Pi has nobody to type a LUKS passphrase at boot; the book advises no"
+        fi
+        prompt ENCRYPT "Encrypt the root filesystem with LUKS? (yes/no)" "${ENCRYPT}"
+        [[ ${ENCRYPT} == y* ]] && ENCRYPT=yes || ENCRYPT=no
+        while prompt SWAP_SIZE "Swap file size, or 0 for none" "${SWAP_SIZE}"; do
+            [[ ${SWAP_SIZE} =~ ^([0-9]+[kKmMgG]?|0)$ ]] && break
+        done
+        while prompt TIMEZONE "Time zone" "${TIMEZONE}"; do
+            [[ -f /usr/share/zoneinfo/${TIMEZONE} ]] && break
+            echo "  not in /usr/share/zoneinfo" >&2
+        done
+        while prompt LOCALE "Locale" "${LOCALE}"; do
+            grep -qE "^#?\s*${LOCALE//./\\.} " /etc/locale.gen && break
+            echo "  not in /etc/locale.gen" >&2
+        done
+        prompt KEYMAP "Console keymap" "${KEYMAP}"
+        prompt ADMIN_NOPASSWD "Passwordless sudo for ${ADMIN}? (yes/no)" "${ADMIN_NOPASSWD}"
+        [[ ${ADMIN_NOPASSWD} == y* ]] && ADMIN_NOPASSWD=yes || ADMIN_NOPASSWD=no
+    fi
+
+    write_host_file
+    seed_repo
+    if [[ -z ${from} ]]; then
+        prompt extra "Extra packages to install (blank for none)" ""
+        if [[ -n ${extra} ]]; then
+            echo "${extra}" >>"${HOST_REPO}/packages.txt"
+            msg "  added to packages.txt: ${extra}"
+        fi
+    fi
+    commit_repo "${HOST_REPO}" "setup host: ${HOSTNAME}"
+    echo
+    msg "Host repo: ${HOST_REPO}. Next: setup disk"
+}
+
+# --- disk -------------------------------------------------------------------
+
+# True if TARGET already holds the layout setup disk builds on ROOTDEV.
+layout_mounted() {
+    local sv dir
+    [[ $(findmnt -no SOURCE "${TARGET}" 2>/dev/null) == "${ROOTDEV}[/@]" ]] || return 1
+    [[ $(findmnt -no SOURCE "${TARGET}/boot" 2>/dev/null) == "${ESP}" ]] || return 1
+    for sv in "${SUBVOLS[@]:1}"; do
+        dir=$(subvol_dir "${sv}")
+        [[ $(findmnt -no SOURCE "${TARGET}${dir}" 2>/dev/null) == "${ROOTDEV}[/${sv}]" ]] || return 1
+    done
+}
+
+subvol_dir() {
+    case $1 in
+        @home) echo /home ;;
+        @snapshots) echo /.snapshots ;;
+        @log) echo /var/log ;;
+        @pkg) echo /var/cache/pacman/pkg ;;
+        @swap) echo /swap ;;
+    esac
+}
+
+open_luks() {
+    [[ ${ENCRYPT} == yes ]] || return 0
+    [[ -e ${ROOTDEV} ]] && return 0
+    run cryptsetup open "${ROOT}" "${CRYPT_NAME}"
+}
+
+mount_layout() {
+    local sv dir
+    run mount -o "${MOUNT_OPTS},subvol=@" "${ROOTDEV}" "${TARGET}"
+    run mkdir -p "${TARGET}"/{home,.snapshots,var/log,var/cache/pacman/pkg,swap,boot}
+    for sv in "${SUBVOLS[@]:1}"; do
+        dir=$(subvol_dir "${sv}")
+        if [[ ${sv} == @swap ]]; then
+            # A swapfile must not be compressed.
+            run mount -o "noatime,subvol=${sv}" "${ROOTDEV}" "${TARGET}${dir}"
+        else
+            run mount -o "${MOUNT_OPTS},subvol=${sv}" "${ROOTDEV}" "${TARGET}${dir}"
+        fi
+    done
+    run mount "${ESP}" "${TARGET}/boot"
+}
+
+swap_on() {
+    local file=${TARGET}/swap/swapfile
+    [[ ${SWAP_SIZE} == 0 ]] && return 0
+    if [[ ! -f ${file} ]]; then
+        run btrfs filesystem mkswapfile --size "${SWAP_SIZE}" --uuid clear "${file}"
+    fi
+    swapon --show=NAME --noheadings | grep -qx "${file}" || run swapon "${file}"
+}
+
+describe_disk() {
+    local real
+    real=$(realpath "${DISK}")
+    lsblk -no NAME,SIZE,MODEL -d "${real}" | awk '{$1=$1; print}'
+}
+
+describe_current() {
+    local real n
+    real=$(realpath "${DISK}")
+    n=$(lsblk -nro TYPE "${real}" | grep -c part) || true
+    if ((n == 0)); then
+        echo "empty (no partitions)"
+    else
+        echo "${n} partition(s): $(lsblk -nro NAME,FSTYPE,LABEL "${real}" | awk 'NR>1 {printf "%s %s %s; ", $1, $2, $3}')"
+    fi
+}
+
+# Refuse to erase a disk anything is still using.
+disk_in_use() {
+    local real
+    real=$(realpath "${DISK}")
+    if lsblk -nro MOUNTPOINTS "${real}" | grep -q .; then
+        die "a partition on ${real} is mounted: unmount it first (or use 'setup disk --mount' to reuse this layout)"
+    fi
+    if swapon --show=NAME --noheadings | grep -q "^${real}"; then
+        die "swap on ${real} is active: swapoff it first"
+    fi
+    if lsblk -nro TYPE "${real}" | grep -q crypt; then
+        die "a LUKS volume on ${real} is open: cryptsetup close it first"
+    fi
+    if findmnt -no SOURCE "${TARGET}" >/dev/null 2>&1; then
+        die "${TARGET} is mounted from another device: unmount it first"
+    fi
+}
+
+cmd_disk() {
+    local mount_only=0 typed real
+    while (($#)); do
+        case $1 in
+            --mount) mount_only=1; shift ;;
+            --confirm-wipe) CONFIRM_WIPE=${2:?}; shift 2 ;;
+            *) die "setup disk: unknown argument $1" ;;
+        esac
+    done
+    load_host
+    section "Prepare the disk"
+    [[ -e ${DISK} ]] || die "${DISK} (from ${HOST_FILE}) is not on this machine: run 'setup host' to pick a disk"
+    is_stick "${DISK}" && die "${DISK} is the BOOMSTICK you booted from"
+    if [[ $(arch) == x86_64 && ! -e /sys/firmware/efi/fw_platform_size ]]; then
+        die "booted in legacy BIOS mode: switch the firmware to UEFI (setup installs UEFI systems only)"
+    fi
+
+    if layout_mounted; then
+        swap_on
+        msg "${TARGET} already has the layout for ${HOSTNAME}. Nothing to do."
+        return 0
+    fi
+
+    if ((mount_only)); then
+        open_luks
+        mount_layout
+        swap_on
+        msg "Mounted the existing layout for ${HOSTNAME} under ${TARGET}."
+        return 0
+    fi
+
+    disk_in_use
+    real=$(realpath "${DISK}")
+    review \
+        "Host:         ${HOSTNAME}" \
+        "Disk:         ${DISK}" \
+        "              ($(describe_disk))" \
+        "Currently:    $(describe_current)" \
+        "Will create:  1G ESP (vfat) + rest btrfs, $([[ ${ENCRYPT} == yes ]] && echo "LUKS2 encrypted" || echo "no encryption")" \
+        "Subvolumes:   ${SUBVOLS[*]}" \
+        "Swap:         $([[ ${SWAP_SIZE} == 0 ]] && echo none || echo "${SWAP_SIZE} swapfile")"
+    if [[ ${CONFIRM_WIPE} != "${HOSTNAME}" ]]; then
+        read -rp "This ERASES ${real}. Type the hostname to continue: " typed
+        [[ ${typed} == "${HOSTNAME}" ]] || die "not erasing anything"
+    fi
+
+    run sgdisk --zap-all "${real}"
+    run sgdisk --clear \
+        --new=1:0:+1G --typecode=1:ef00 --change-name=1:ESP \
+        --new=2:0:0 --typecode=2:8300 --change-name=2:root \
+        "${real}"
+    run partprobe "${real}"
+    run udevadm settle
+    # The new partitions start where the old ones did, so an old
+    # filesystem's signature can still be there: clear it, or mkfs and
+    # cryptsetup stop to ask about it.
+    run wipefs --all --quiet "${ESP}" "${ROOT}"
+    if [[ ${ENCRYPT} == yes ]]; then
+        run cryptsetup luksFormat --type luks2 --batch-mode --verify-passphrase "${ROOT}"
+        open_luks
+    fi
+    run mkfs.fat -F32 -n ESP "${ESP}"
+    run mkfs.btrfs --quiet -L arch "${ROOTDEV}"
+    run mount "${ROOTDEV}" "${TARGET}"
+    local sv
+    for sv in "${SUBVOLS[@]}"; do
+        run btrfs subvolume create "${TARGET}/${sv}"
+    done
+    run umount "${TARGET}"
+    mount_layout
+    swap_on
+    echo
+    ok disk "$(findmnt -nR "${TARGET}" | wc -l) mounts under ${TARGET}$([[ ${SWAP_SIZE} != 0 ]] && echo ", ${SWAP_SIZE} swap active")"
+    msg "Next: setup install"
+}
+
+# --- install ----------------------------------------------------------------
+
+# Early BOOMSTICK Pi images do not trust Arch Linux ARM's build key, and
+# pacstrap -K would build the target without the trust added by hand.
+alarm_key_trusted() {
+    pacman-key --list-keys "${ALARM_KEY}" 2>/dev/null | grep -q '\[ *full *\]'
+}
+
+refresh_keyring() {
+    if [[ $(arch) == aarch64 ]]; then
+        [[ -f /usr/share/pacman/keyrings/archlinuxarm.gpg ]] || ALARM_SHIPPED=0
+        alarm_key_trusted || die "this stick does not trust Arch Linux ARM's build key. Rebuild the stick, or run: pacman-key --lsign-key ${ALARM_KEY}"
+        run pacman -Sy --needed --noconfirm archlinuxarm-keyring archlinux-keyring
+    else
+        run pacman -Sy --needed --noconfirm archlinux-keyring
+    fi
+}
+
+install_packages() {
+    local pkgs=() flags=(-K)
+    read -ra pkgs <<<"$(base_packages)"
+    mapfile -t -O "${#pkgs[@]}" pkgs < <(repo_packages)
+    if [[ -x ${TARGET}/usr/bin/pacman ]]; then
+        # Already installed: only add what is missing.
+        in_target pacman -S --needed --noconfirm "${pkgs[@]}"
+        return
+    fi
+    # On a stick that did not ship ALARM's keyring, the trust signed in
+    # by hand lives only in this keyring; -K (which implies -G) would
+    # build the target without it. See the book's Prepare pacman page.
+    if [[ $(arch) == aarch64 ]] && ((!ALARM_SHIPPED)); then
+        flags=()
+    fi
+    run pacstrap "${flags[@]}" "${TARGET}" "${pkgs[@]}"
+}
+
+write_fstab() {
+    # Written, not appended: running this twice gives the same file.
+    printf '+ genfstab -U %s > %s/etc/fstab\n' "${TARGET}" "${TARGET}" >&2
+    genfstab -U "${TARGET}" >"${TARGET}/etc/fstab"
+    if [[ ${SWAP_SIZE} != 0 ]] && ! grep -q '^/swap/swapfile' "${TARGET}/etc/fstab"; then
+        die "no swapfile in the new fstab: is it on? (setup disk turns it on)"
+    fi
+}
+
+localize() {
+    local esc=${LOCALE//./\\.}
+    run ln -sf "/usr/share/zoneinfo/${TIMEZONE}" "${TARGET}/etc/localtime"
+    in_target hwclock --systohc || warn "hwclock failed (no RTC?): the clock is set by NTP at boot"
+    if ! grep -qE "^${esc} " "${TARGET}/etc/locale.gen"; then
+        run sed -i -E "s/^#\s*(${esc} )/\1/" "${TARGET}/etc/locale.gen"
+    fi
+    grep -qE "^${esc} " "${TARGET}/etc/locale.gen" || die "${LOCALE} is not in the target's /etc/locale.gen"
+    in_target locale-gen
+    echo "LANG=${LOCALE}" >"${TARGET}/etc/locale.conf"
+    echo "KEYMAP=${KEYMAP}" >"${TARGET}/etc/vconsole.conf"
+    echo "${HOSTNAME}" >"${TARGET}/etc/hostname"
+    msg "  wrote /etc/locale.conf, /etc/vconsole.conf, /etc/hostname"
+}
+
+build_initramfs() {
+    local conf=${TARGET}/etc/mkinitcpio.conf
+    if [[ ${ENCRYPT} == yes ]] && ! grep -qE '^HOOKS=.*\bsd-encrypt\b' "${conf}"; then
+        grep -qE '^HOOKS=.*\bsystemd\b' "${conf}" \
+            || die "mkinitcpio.conf HOOKS do not use systemd: add the LUKS hook by hand"
+        run sed -i -E '/^HOOKS=/ s/\bblock\b/block sd-encrypt/' "${conf}"
+    fi
+    in_target mkinitcpio -P
+}
+
+# The kernel command line's root, for either kind of disk.
+kernel_root() {
+    if [[ ${ENCRYPT} == yes ]]; then
+        echo "rd.luks.name=$(blkid -s UUID -o value "${ROOT}")=${CRYPT_NAME} root=${ROOTDEV} rootflags=subvol=@ rw"
+    else
+        echo "root=UUID=$(findmnt -no UUID "${TARGET}") rootflags=subvol=@ rw"
+    fi
+}
+
+install_bootloader() {
+    if is_rpi5; then
+        # The firmware reads only the first line.
+        echo "$(kernel_root) rootwait console=serial0,115200 console=tty1 fsck.repair=yes" \
+            >"${TARGET}/boot/cmdline.txt"
+        msg "  wrote /boot/cmdline.txt: $(cat "${TARGET}/boot/cmdline.txt")"
+        grep -q '^initramfs ' "${TARGET}/boot/config.txt" \
+            || warn "/boot/config.txt has no initramfs line: the Pi will boot without one"
+        return
+    fi
+    if [[ -f ${TARGET}/boot/EFI/systemd/systemd-bootx64.efi ]]; then
+        in_target bootctl update || true
+    else
+        in_target bootctl install
+    fi
+    mkdir -p "${TARGET}/boot/loader/entries"
+    cat >"${TARGET}/boot/loader/loader.conf" <<'EOF'
+default  arch.conf
+timeout  3
+console-mode keep
+editor   no
+EOF
+    cat >"${TARGET}/boot/loader/entries/arch.conf" <<EOF
+title   Arch Linux
+linux   /vmlinuz-linux
+initrd  /initramfs-linux.img
+options $(kernel_root)
+EOF
+    msg "  wrote /boot/loader/loader.conf and entries/arch.conf: $(kernel_root)"
+}
+
+# The host repo, applied to the target: files under etc/, then units.
+# git keeps no file modes, so modes are set here, by place.
+apply_repo() {
+    local src rel mode unit
+    if [[ -d ${HOST_REPO}/etc ]]; then
+        while IFS= read -r src; do
+            rel=${src#"${HOST_REPO}"/}
+            case ${rel} in
+                etc/sudoers.d/*) mode=0440 ;;
+                *) mode=0644 ;;
+            esac
+            run install -D -m "${mode}" -o root -g root "${src}" "${TARGET}/${rel}"
+        done < <(find "${HOST_REPO}/etc" -type f | sort)
+    fi
+    # A sudoers drop-in the repo no longer has must not linger.
+    if [[ ${ADMIN_NOPASSWD} != yes && -e ${TARGET}/etc/sudoers.d/10-admin && ! -e ${HOST_REPO}/etc/sudoers.d/10-admin ]]; then
+        run rm -f "${TARGET}/etc/sudoers.d/10-admin"
+    fi
+    while read -r unit; do
+        [[ -n ${unit} ]] && in_target systemctl enable "${unit}"
+    done < <(repo_units)
+}
+
+# Things only the live system can do: arch-chroot bind-mounts its own
+# resolv.conf over the target's, and the WiFi credentials are here.
+live_side() {
+    local f n=0
+    run ln -sf /run/systemd/resolve/stub-resolv.conf "${TARGET}/etc/resolv.conf"
+    shopt -s nullglob
+    for f in /var/lib/iwd/*.psk /var/lib/iwd/*.open /var/lib/iwd/*.8021x; do
+        ((n++)) || run install -d -m 0700 "${TARGET}/var/lib/iwd"
+        run install -m 0600 "${f}" "${TARGET}/var/lib/iwd/"
+    done
+    shopt -u nullglob
+    ((n)) || msg "  no WiFi networks on this stick to copy (wired only)"
+}
+
+create_accounts() {
+    ask_target id "${ADMIN}" >/dev/null 2>&1 \
+        || in_target useradd -m -u 1000 -G wheel -c "Administrator" "${ADMIN}"
+    ask_target id "${DAILY}" >/dev/null 2>&1 \
+        || in_target useradd -m -c "Daily driver" "${DAILY}"
+    in_target visudo -c
+    if [[ -s ${HOST_REPO}/authorized_keys ]]; then
+        in_target install -d -m 0700 -o "${ADMIN}" -g "${ADMIN}" "/home/${ADMIN}/.ssh"
+        run install -m 0600 "${HOST_REPO}/authorized_keys" "${TARGET}/home/${ADMIN}/.ssh/authorized_keys"
+        in_target chown "${ADMIN}:${ADMIN}" "/home/${ADMIN}/.ssh/authorized_keys"
+    else
+        warn "no authorized_keys in ${HOST_REPO}: ${ADMIN} will not be able to log in over SSH"
+    fi
+}
+
+password_state() { { ask_target passwd -S "$1" 2>/dev/null || true; } | awk '{print $2}'; }
+
+set_passwords() {
+    local u
+    for u in root "${ADMIN}" "${DAILY}"; do
+        if [[ $(password_state "${u}") == P ]]; then
+            msg "  ${u}: password already set"
+            continue
+        fi
+        msg "Set the password for ${u}:"
+        until in_target passwd "${u}"; do :; done
+    done
+}
+
+move_repo_in() {
+    local dest=${TARGET}/home/${ADMIN}/arch
+    run mkdir -p "${dest}"
+    run cp -a "${HOST_REPO}/." "${dest}/"
+    in_target chown -R "${ADMIN}:${ADMIN}" "/home/${ADMIN}/arch"
+}
+
+cmd_install() {
+    local pkgs extras
+    load_host
+    section "Install the system"
+    layout_mounted || die "${TARGET} does not have the layout for ${HOSTNAME}: run 'setup disk' (or 'setup disk --mount')"
+    swap_on
+    pkgs=$(base_packages)
+    extras=$(repo_packages | tr '\n' ' ')
+    review \
+        "Host:         ${HOSTNAME}" \
+        "Detected:     $(machine_name)" \
+        "Packages:     ${pkgs}" \
+        "              + packages.txt: ${extras:-(none)}" \
+        "Boot:         $(is_rpi5 && echo "Pi firmware (cmdline.txt)" || echo "systemd-boot")$([[ ${ENCRYPT} == yes ]] && echo ", LUKS unlock")" \
+        "Units:        $(repo_units | tr '\n' ' ')" \
+        "Accounts:     ${ADMIN} (1000, wheel$([[ ${ADMIN_NOPASSWD} == yes ]] && echo ", passwordless sudo")), ${DAILY}" \
+        "SSH keys:     $(key_count "${HOST_REPO}/authorized_keys"), from ${HOST_REPO}/authorized_keys" \
+        "Host repo:    ${HOST_REPO} -> ${TARGET}/home/${ADMIN}/arch"
+    confirm "Install?" || die "not installing"
+
+    section "Packages";      refresh_keyring; install_packages
+    section "fstab";         write_fstab
+    section "Localize";      localize
+    section "initramfs";     build_initramfs
+    section "Bootloader";    install_bootloader
+    section "Host repo";     apply_repo
+    section "Live system";   live_side
+    section "Accounts";      create_accounts
+    section "Passwords";     set_passwords
+    section "Host repo moves in"
+    # Committed here, as root, before it becomes admin's: git refuses to
+    # work as root in a repository someone else owns.
+    commit_repo "${HOST_REPO}" "setup install: ${HOSTNAME} ($(machine_name))"
+    move_repo_in
+    cmd_check || true
+}
+
+# --- check ------------------------------------------------------------------
+
+# Print one line per check; return non-zero if any failed.
+cmd_check() {
+    local failed=0 n dups units u state states=() keys out
+    load_host
+    section "Check"
+    if ! layout_mounted; then
+        bad layout "${TARGET} does not have the layout for ${HOSTNAME}"
+        return 1
+    fi
+
+    if [[ $(cat "${TARGET}/etc/hostname" 2>/dev/null) == "${HOSTNAME}" ]]; then
+        ok hostname "${HOSTNAME}"
+    else
+        bad hostname "/etc/hostname is not ${HOSTNAME}"; failed=1
+    fi
+
+    n=$(grep -cE '^UUID=' "${TARGET}/etc/fstab" 2>/dev/null) || n=0
+    dups=$(awk '!/^#/ && NF {print $2}' "${TARGET}/etc/fstab" 2>/dev/null | sort | uniq -d) || true
+    if ((n >= 7)) && [[ -z ${dups} ]] \
+        && { [[ ${SWAP_SIZE} == 0 ]] || grep -q '^/swap/swapfile' "${TARGET}/etc/fstab"; }; then
+        ok fstab "${n} entries$([[ ${SWAP_SIZE} != 0 ]] && echo " + swap"), no duplicates"
+    else
+        bad fstab "${n} UUID entries${dups:+, duplicated: ${dups}}"; failed=1
+    fi
+
+    if is_rpi5; then
+        if [[ $(wc -l <"${TARGET}/boot/cmdline.txt") -le 1 ]] && grep -q 'rootflags=subvol=@' "${TARGET}/boot/cmdline.txt"; then
+            ok boot "cmdline.txt: $(grep -oE '(root|rd\.luks\.name)=[^ ]+' "${TARGET}/boot/cmdline.txt" | head -1)"
+        else
+            bad boot "cmdline.txt is missing rootflags=subvol=@ or is more than one line"; failed=1
+        fi
+    else
+        if grep -q 'rootflags=subvol=@' "${TARGET}/boot/loader/entries/arch.conf" 2>/dev/null \
+            && [[ -f ${TARGET}/boot/EFI/systemd/systemd-bootx64.efi ]]; then
+            ok boot "systemd-boot, entries/arch.conf: $(grep -oE '(root|rd\.luks\.name)=[^ ]+' "${TARGET}/boot/loader/entries/arch.conf" | head -1)"
+        else
+            bad boot "systemd-boot or its arch.conf entry is missing"; failed=1
+        fi
+    fi
+
+    if compgen -G "${TARGET}/boot/initramfs-*.img" >/dev/null; then
+        ok initramfs "$(find "${TARGET}/boot" -maxdepth 1 -name 'initramfs-*.img' -printf '%f ')"
+    else
+        bad initramfs "no /boot/initramfs-*.img"; failed=1
+    fi
+
+    if ask_target id "${ADMIN}" >/dev/null 2>&1 && ask_target id "${DAILY}" >/dev/null 2>&1; then
+        ok accounts "${ADMIN} ${DAILY}"
+    else
+        bad accounts "${ADMIN} or ${DAILY} does not exist"; failed=1
+    fi
+
+    for u in root "${ADMIN}" "${DAILY}"; do
+        state=$(password_state "${u}"); states+=("${u}=${state:-?}")
+        [[ ${state} == P ]] || failed=1
+    done
+    if [[ ${states[*]} != *=[!P]* ]]; then
+        ok passwords "${states[*]}"
+    else
+        bad passwords "${states[*]} (P = set, L = locked, NP = none)"
+    fi
+
+    if ask_target visudo -c >/dev/null 2>&1; then
+        ok sudo "visudo -c OK"
+    else
+        bad sudo "visudo -c fails: sudo would refuse to run"; failed=1
+    fi
+
+    units=()
+    while read -r u; do [[ -n ${u} ]] && units+=("${u}"); done < <(repo_units)
+    if ((${#units[@]})) && ask_target systemctl is-enabled "${units[@]}" >/dev/null 2>&1; then
+        ok units "${units[*]} enabled"
+    else
+        bad units "not all enabled: $(ask_target systemctl is-enabled "${units[@]}" 2>&1 | tr '\n' ' ')"; failed=1
+    fi
+
+    keys=$(key_count "${TARGET}/home/${ADMIN}/.ssh/authorized_keys")
+    # No host keys yet is expected (they are made on first boot), and
+    # sshd only looks for them after the config has parsed.
+    out=$(ask_target sshd -t 2>&1) || true
+    if ((keys > 0)) \
+        && [[ $(ask_target stat -c %U:%a "/home/${ADMIN}/.ssh/authorized_keys" 2>/dev/null) == "${ADMIN}:600" ]] \
+        && [[ -z ${out} || ${out} == *"no hostkeys available"* ]]; then
+        ok ssh "${keys} key(s) for ${ADMIN}, sshd config parses"
+    else
+        bad ssh "${keys} key(s) for ${ADMIN}; check ownership/mode and 'sshd -t'"; failed=1
+    fi
+
+    n=$(find "${TARGET}/var/lib/iwd" -maxdepth 1 -type f 2>/dev/null | wc -l)
+    if ((n > 0)); then
+        ok wifi "${n} network(s) in /var/lib/iwd"
+    elif compgen -G "/sys/class/net/en*" >/dev/null; then
+        ok wifi "none, but this machine has ethernet"
+    else
+        bad wifi "no WiFi networks and no ethernet: it would never join a network"; failed=1
+    fi
+
+    if ((failed)); then
+        echo "Some checks failed. Do not reboot until they pass."
+        return 1
+    fi
+    echo "All checks passed. Safe to reboot: setup reboot"
+}
+
+cmd_reboot() {
+    cmd_check || die "not rebooting: fix the failed checks first"
+    confirm "Unmount ${TARGET} and reboot?" || return 0
+    if [[ ${SWAP_SIZE} != 0 ]] && swapon --show=NAME --noheadings | grep -qx "${TARGET}/swap/swapfile"; then
+        run swapoff "${TARGET}/swap/swapfile"
+    fi
+    run umount -R "${TARGET}"
+    [[ ${ENCRYPT} == yes ]] && run cryptsetup close "${CRYPT_NAME}"
+    msg "Pull the stick once the machine powers down, or it will boot the installer again."
+    run systemctl reboot
+}
+
+# --- menu -------------------------------------------------------------------
+
+cmd_status() {
+    local host=○ disk=○ install=○ next=host
+    if [[ -f ${HOST_FILE} ]]; then
+        host=✓; next=disk
+        load_host
+        if layout_mounted; then
+            disk=✓; next=install
+            if [[ -d ${TARGET}/home/${ADMIN}/arch ]]; then
+                install=✓; next=check
+            fi
+        fi
+    fi
+    echo "setup: install Arch Linux on this machine ($(machine_name))"
+    echo
+    echo "  ${host} setup host      describe the machine (${HOST_REPO})"
+    echo "  ${disk} setup disk      partition, format and mount under ${TARGET}"
+    echo "  ${install} setup install   install, make it boot, network, users, SSH"
+    echo "    setup check     the pre-flight check"
+    echo "    setup reboot    check, unmount and reboot"
+    echo
+    if [[ -t 0 ]] && confirm "Run 'setup ${next}' now?"; then
+        "cmd_${next}"
+    fi
+}
+
+usage() { sed -n '2,/^set -euo/p' "$0" | sed -e '/^set -euo/d' -e 's/^# \{0,1\}//'; }
+
+main() {
+    while (($#)); do
+        case $1 in
+            --yes|-y) YES=1; shift ;;
+            -h|--help|help) usage; return ;;
+            *) break ;;
+        esac
+    done
+    [[ ${EUID} -eq 0 ]] || die "run setup as root on the live system"
+    local cmd=${1:-status}
+    (($#)) && shift
+    case ${cmd} in
+        status|host|disk|install|check|reboot) "cmd_${cmd}" "$@" ;;
+        *) usage >&2; exit 2 ;;
+    esac
+}
+
+main "$@"

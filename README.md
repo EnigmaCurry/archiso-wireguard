@@ -355,6 +355,7 @@ tmpfs, root-only:
 | `ssh/authorized_keys` | `/root/.ssh/authorized_keys` (0600) |
 | `webhook.env` | `/etc/arch-iso/webhook.env` (0600) |
 | `ssh/host/*` | `/etc/ssh/` (0600), generated and saved back on the first boot |
+| `bin/setup` | `/usr/local/bin/setup` (0755), replacing the one in the image |
 
 It looks in two places, in this order:
 
@@ -526,6 +527,40 @@ containers; the packages above set it.
 `just build-usb` needs this on every host, since it builds both
 architectures. `just build` on x86_64 and `just build-rpi5` on arm64
 need nothing.
+
+## Installing with setup
+
+The stick carries an installer, [`setup`](airootfs/usr/local/bin/setup),
+which runs the install from the
+[Arch Workstation](https://book.rymcg.tech/arch-workstation/) book on the
+live system. SSH in and run, in order:
+
+```
+setup host      # describe the machine: writes the host repo, /root/arch
+setup disk      # partition, (LUKS,) btrfs subvolumes, mount under /mnt, swap
+setup install   # pacstrap, fstab, boot, network, accounts, SSH, then check
+setup reboot    # check again, unmount and reboot (refuses if a check fails)
+```
+
+`setup` with no arguments shows which steps are done and offers the
+next one. Every step reads `/root/arch/host.env` rather than shell
+variables, is safe to run again, and echoes each command it runs in
+the book's words. Erasing the disk asks you to type the hostname.
+`setup host --from <git URL | file | name>` starts from an existing
+host repo, or from `archiso-config/hosts/<name>.env` on the stick;
+`setup disk --mount` mounts an existing layout without formatting, for
+rescue or to finish a half-done install.
+
+The host repo it writes (`host.env`, `packages.txt`, `units.txt`, an
+`etc/` overlay and `authorized_keys`) holds no secrets: passwords are
+asked for during `setup install`, and WiFi passphrases are copied from
+the live system into the target, never into the repo. It ends up in the
+installed system at `/home/admin/arch`.
+
+`just provision` also copies `setup` onto the config partition as
+`archiso-config/bin/setup`, and the live system uses that copy in place
+of the one in the image, so a fix to the installer reaches a stick
+without a rebuild.
 
 ## Commands
 
