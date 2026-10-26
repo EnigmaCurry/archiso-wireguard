@@ -45,7 +45,7 @@ TARGET=${TARGET:-/mnt}
 CONFIG_LABEL=${CONFIG_LABEL:-ARCH_CONFIG}
 CONFIG_DIR=${CONFIG_DIR:-archiso-config}
 CRYPT_NAME=cryptroot
-SUBVOLS=(@ @home @snapshots @log @pkg @swap)
+SUBVOLS=(@ @home @snapshots @log @pkg @swap @nix)
 MOUNT_OPTS="noatime,compress=zstd:1"
 ADMIN="admin"
 DAILY=user
@@ -442,7 +442,17 @@ cmd_save() {
 }
 
 cmd_apply() {
-    aconfmgr --config "${CONFIG}" "$@" apply
+    local pending
+    pending=$(mktemp)
+    # shellcheck disable=SC2064 # expand now: pending is local
+    trap "rm -f '${pending}'" EXIT
+    ADMIN_PENDING=${pending} aconfmgr --config "${CONFIG}" "$@" apply
+    # Units from packages this pass installed: enable them now.
+    if [[ -s ${pending} ]]; then
+        echo "Enabling units from newly installed packages: $(sort -u "${pending}" | tr '\n' ' ')"
+        : >"${pending}"
+        ADMIN_PENDING=${pending} aconfmgr --config "${CONFIG}" "$@" apply
+    fi
 }
 
 cmd_upgrade() {
@@ -503,20 +513,36 @@ function RepoList() {
 # EnableUnits [--global] UNIT...: the links 'systemctl enable' makes for
 # these units, worked out by systemctl itself, against a copy of the
 # unit files (and the repo's own, under etc/systemd/).
+#
+# A unit whose package is not installed yet has no unit file to work
+# from: it is skipped, and named in $ADMIN_PENDING, so that 'admin
+# apply' runs a second pass once the first has installed the package.
 function EnableUnits() {
-    local scope=() root link
+    local scope=() kind=system root link unit file units=()
     if [[ $1 == --global ]]; then
         scope=(--global)
+        kind=user
         shift
     fi
-    (($#)) || return 0
     root=$(mktemp -d "$tmp_dir/units.XXXXXX")
     mkdir -p "$root/usr/lib/systemd" "$root/etc/systemd"
     cp -r /usr/lib/systemd/system /usr/lib/systemd/user "$root/usr/lib/systemd/"
     if [[ -d $HOST_REPO/etc/systemd ]]; then
         cp -r "$HOST_REPO/etc/systemd/." "$root/etc/systemd/"
     fi
-    systemctl --root="$root" "${scope[@]}" enable "$@" >/dev/null
+    for unit in "$@"; do
+        file=$unit
+        [[ $file == *.* ]] || file+=.service
+        file=${file/@*./@.}  # an instance's template: getty@tty1 -> getty@
+        if [[ -e $root/usr/lib/systemd/$kind/$file || -e $root/etc/systemd/$kind/$file ]]; then
+            units+=("$unit")
+        else
+            echo "$unit" >>"${ADMIN_PENDING:-/dev/null}"
+        fi
+    done
+    if ((${#units[@]})); then
+        systemctl --root="$root" "${scope[@]}" enable "${units[@]}" >/dev/null
+    fi
     while IFS= read -r link; do
         CreateLink "${link#"$root"}" "$(readlink "$link")"
     done < <(find "$root/etc" -type l | sort)
@@ -630,6 +656,8 @@ IgnorePath '/var/log/*'
 IgnorePath '/var/tmp/*'
 IgnorePath '/swap'
 IgnorePath '/.snapshots'
+# The Nix store, if you install Nix: its own subvolume, managed by nix.
+IgnorePath '/nix'
 
 # aconfmgr's own checkout (setup installs it; see 40-system.sh).
 IgnorePath '/usr/local/lib/aconfmgr'
@@ -820,6 +848,7 @@ subvol_dir() {
         @log) echo /var/log ;;
         @pkg) echo /var/cache/pacman/pkg ;;
         @swap) echo /swap ;;
+        @nix) echo /nix ;;
     esac
 }
 
@@ -832,7 +861,7 @@ open_luks() {
 mount_layout() {
     local sv dir
     run mount -o "${MOUNT_OPTS},subvol=@" "${ROOTDEV}" "${TARGET}"
-    run mkdir -p "${TARGET}"/{home,.snapshots,var/log,var/cache/pacman/pkg,swap,boot}
+    run mkdir -p "${TARGET}"/{home,.snapshots,var/log,var/cache/pacman/pkg,swap,nix,boot}
     for sv in "${SUBVOLS[@]:1}"; do
         dir=$(subvol_dir "${sv}")
         if [[ ${sv} == @swap ]]; then
@@ -1259,7 +1288,8 @@ cmd_check() {
 
     n=$(grep -cE '^UUID=' "${TARGET}/etc/fstab" 2>/dev/null) || n=0
     dups=$(awk '!/^#/ && NF {print $2}' "${TARGET}/etc/fstab" 2>/dev/null | sort | uniq -d) || true
-    if ((n >= 7)) && [[ -z ${dups} ]] \
+    # One per subvolume, and the ESP.
+    if ((n >= ${#SUBVOLS[@]} + 1)) && [[ -z ${dups} ]] \
         && { [[ ${SWAP_SIZE} == 0 ]] || grep -q '^/swap/swapfile' "${TARGET}/etc/fstab"; }; then
         ok fstab "${n} entries$([[ ${SWAP_SIZE} != 0 ]] && echo " + swap"), no duplicates"
     else

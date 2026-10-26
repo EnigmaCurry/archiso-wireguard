@@ -1,0 +1,9 @@
+
+# Desktop (the book's Desktop chapter): sway and what it needs from
+# the system. The rest of the desktop -- terminal, bar, launcher, fonts,
+# dotfiles -- comes from Nix, with Home Manager and sway-home.
+nix
+sway swaylock swayidle kanshi xdg-desktop-portal-wlr
+pipewire pipewire-pulse pipewire-jack wireplumber pamixer playerctl brightnessctl
+greetd greetd-tuigreet polkit
+firefox noto-fonts just

@@ -1254,3 +1254,50 @@ record it" workflow.
    post snapshot, and that `admin diff` on the fresh install finds no
    drift. A full `admin diff` takes about 1m15s under TCG.
    The first full run with all of it passed in 11m20s.
+
+## Desktop: @nix, desktop/, DESKTOP=1 (2026-10-26)
+
+The desktop is added after the install, through the host repo and
+`admin apply`; setup stays headless. sway and everything tied to the
+system (PAM, logind, Mesa, system services) come from pacman; the
+user's environment comes from Nix with Home Manager and sway-home.
+
+ * `setup disk` makes an `@nix` subvolume, mounted at /nix: the Nix
+   store stays out of the snapshots of `/`, and `90-ignore.sh` ignores
+   /nix. (Without it, even the empty mount point would be drift.)
+   `setup check`'s fstab line now wants one entry per subvolume plus
+   the ESP, instead of a fixed seven.
+ * `desktop/` holds the book's Desktop additions to a host repo:
+   packages (nix, sway, swaylock, swayidle, kanshi,
+   xdg-desktop-portal-wlr, PipeWire with pipewire-pulse and
+   WirePlumber, pamixer, playerctl, brightnessctl, greetd with
+   tuigreet, polkit, firefox, just), units (nix-daemon.socket, greetd),
+   etc/nix/nix.conf (flakes) and etc/greetd/config.toml (tuigreet
+   starting sway on vt1). Arch's nix package leaves the daemon socket
+   open to all users (no nix-users group), and greetd.service already
+   conflicts with getty@tty1.
+ * The first `DESKTOP=1` run found a real bug: `admin apply` failed at
+   once with "Unit nix-daemon.socket does not exist". aconfmgr compiles
+   the whole configuration before installing anything, and
+   EnableUnits asked `systemctl --root` to enable a unit whose package
+   was not installed yet. EnableUnits now skips such units and names
+   them in `$ADMIN_PENDING`; `admin apply` runs a second pass when the
+   first left any, by which time the packages are there. The same run
+   showed that test-vm's `|| true` had hidden the failure; a failed
+   apply now stops the test.
+ * `DESKTOP=1 just test-vm` copies desktop/ into ~/arch, runs `admin
+   apply --yes`, reboots, and checks: sway, swaylock and swayidle are
+   installed, greetd is active with tuigreet running as greeter,
+   nix-daemon.socket is listening, `user` can reach the daemon (`nix
+   store info`), flakes are on, no units failed, and `admin diff` still
+   finds no drift. Logging in to sway, sway-home's Home Manager
+   install, and GPU drivers for Nix programs are not tested.
+ * The second `DESKTOP=1` run hung in `admin apply --yes` and wrote
+   3.4 GB of "Enter a number (default=1): error: invalid number: y".
+   aconfmgr's `--yes` pipes `yes` into `pacman --confirm`, and the
+   desktop set needed two provider choices: `ttf-font` (firefox) and
+   `jack` (PipeWire). desktop/packages.txt now names `noto-fonts` and
+   `pipewire-jack`; in an ALARM container the whole set then resolves
+   (256 packages, 274 MiB) without a question. test-vm runs that apply
+   under a 40-minute timeout with its output capped at 50 MB.
+   The third run passed in 28m12s, `admin diff` after the desktop included.

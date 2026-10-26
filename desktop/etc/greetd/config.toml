@@ -1,0 +1,8 @@
+# greetd on the first virtual terminal (in place of getty@tty1), with
+# tuigreet asking who you are and starting sway.
+[terminal]
+vt = 1
+
+[default_session]
+command = "tuigreet --time --remember --asterisks --cmd sway"
+user = "greeter"

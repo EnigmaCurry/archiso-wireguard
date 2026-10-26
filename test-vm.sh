@@ -20,6 +20,10 @@
 #      snap-pac pre and post snapshot, and 'admin diff' (aconfmgr save
 #      into a copy of ~/arch/aconfmgr) finds nothing the host repo does
 #      not describe.
+#   6. With DESKTOP=1: adds desktop/ (the book's Desktop chapter) to the
+#      host repo, runs 'admin apply', reboots, and checks that greetd
+#      greets, that 'user' can reach the Nix daemon, and that 'admin
+#      diff' still finds no drift. Logging in to sway is not tested.
 #
 # Needs qemu (brew install qemu, or pacman -S qemu-full), podman (as for
 # the build, for provisioning) and ssh. On Apple Silicon the VM runs
@@ -30,6 +34,7 @@
 #   ENCRYPT=yes      install with LUKS (the passphrase is typed for you
 #                    over a pty, as "setuptest")
 #   KEEP=1           leave the VM's disks in test/ afterwards
+#   DESKTOP=1        go on to install the desktop (step 6)
 #   SSH_PORT=2222    host port forwarded to the VM's sshd
 #   FW_CODE, FW_VARS the x86_64 UEFI firmware's code and vars files,
 #                    when they are somewhere this script doesn't look
@@ -41,6 +46,7 @@ WORK="${ROOT}/test"
 SSH_PORT=${SSH_PORT:-2222}
 ENCRYPT=${ENCRYPT:-no}
 KEEP=${KEEP:-0}
+DESKTOP=${DESKTOP:-0}
 HOST=setuptest
 PASSWORD=setuptest
 DISK_SERIAL=setuptest
@@ -191,6 +197,51 @@ wait_exit() {
 
 # --- the test -----------------------------------------------------------------
 
+# Step 6: the Desktop chapter, as the book does it: desktop/ into the
+# host repo, admin apply, reboot.
+desktop() {
+    phase "Desktop: add desktop/ to the host repo and apply"
+    # COPYFILE_DISABLE: no macOS ._ files in the archive.
+    COPYFILE_DISABLE=1 tar --no-xattrs -C "${ROOT}/desktop" -cf - etc | vm admin@127.0.0.1 'tar -C ~/arch -xf -'
+    vm admin@127.0.0.1 'cat >>~/arch/packages.txt' <"${ROOT}/desktop/packages.txt"
+    vm admin@127.0.0.1 'cat >>~/arch/units.txt' <"${ROOT}/desktop/units.txt"
+    vm admin@127.0.0.1 'git -C ~/arch add -A && git -C ~/arch -c user.name=test -c user.email=test@setuptest commit -qm Desktop'
+    # aconfmgr --yes answers pacman with 'yes': a question it cannot
+    # answer (which provider?) repeats forever. Bound it in time and size.
+    if ! vm admin@127.0.0.1 'set -o pipefail; timeout 2400 admin apply --yes 2>&1 | head -c 50000000' \
+        >"${WORK}/desktop-apply.log" 2>&1; then
+        tail -n 20 "${WORK}/desktop-apply.log" >&2
+        die "admin apply failed (see ${WORK}/desktop-apply.log)"
+    fi
+    grep -E '^Enabling units' "${WORK}/desktop-apply.log" || true
+    vm admin@127.0.0.1 sudo -n systemctl poweroff || true
+    wait_exit
+
+    phase "Boot the desktop"
+    boot_vm "${WORK}/serial-desktop.log"
+    wait_ssh admin "${WORK}/serial-desktop.log"
+
+    phase "Check the desktop"
+    vm admin@127.0.0.1 bash -s <<'EOF'
+set -u
+fail=0
+check() { if eval "$2" >/dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
+check "sway is installed"          'command -v sway swaylock swayidle'
+check "greetd is running"          'systemctl is-active greetd'
+check "tuigreet is greeting"       'pgrep -u greeter tuigreet'
+check "nix-daemon.socket listens"  'systemctl is-active nix-daemon.socket'
+check "user can use the daemon"    'sudo -n -u user nix store info'
+check "flakes are on"              'nix config show experimental-features | grep -qw flakes'
+check "no failed units"            '[ -z "$(systemctl --failed --no-legend)" ]'
+systemctl --failed --no-legend
+exit $fail
+EOF
+
+    phase "admin diff after the desktop"
+    vm admin@127.0.0.1 admin diff 2>/dev/null \
+        || die "admin diff found drift after the desktop: the host repo does not describe it"
+}
+
 main() {
     local image
     command -v qemu-system-x86_64 >/dev/null || die "qemu-system-x86_64 is not installed (brew install qemu)"
@@ -305,6 +356,8 @@ EOF
     # stderr is aconfmgr's progress; stdout says whether it found drift.
     vm admin@127.0.0.1 admin diff 2>/dev/null \
         || die "admin diff found drift: the host repo does not describe the fresh install"
+
+    [[ ${DESKTOP} == 1 ]] && desktop
 
     vm admin@127.0.0.1 sudo -n systemctl poweroff || true
     wait_exit
