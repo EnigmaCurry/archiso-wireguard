@@ -47,8 +47,11 @@ CONFIG_DIR=${CONFIG_DIR:-boomstick}
 CRYPT_NAME=cryptroot
 SUBVOLS=(@ @home @snapshots @log @pkg @swap @nix)
 MOUNT_OPTS="noatime,compress=zstd:1"
+# Fixed on purpose: the book, the sudoers drop-in, the host repo's owner
+# and 'admin' the command all refer to this name.
 ADMIN="admin"
-DAILY=user
+# The everyday login. Asked for by 'setup host' and kept in host.env.
+DAILY=${DAILY:-user}
 # Arch Linux ARM's build key: untrusted on early BOOMSTICK Pi images.
 ALARM_KEY=68B3537F39A313B3E574D06777193F152BDBE6A6
 # aconfmgr is in neither Arch's nor ALARM's repos (only the AUR, as a
@@ -104,7 +107,7 @@ log_header() {
     ver=${IMAGE_VERSION:-unknown}
     echo
     echo "================================================================"
-    echo "setup $*"
+    echo "setup${*:+ $*}"
     echo "  when:    $(date '+%Y-%m-%d %H:%M:%S %Z')"
     # The live system is on UTC, so a second line would usually just
     # repeat the first. Worth having only once a zone has been set.
@@ -113,6 +116,15 @@ log_header() {
     echo "  machine: $(machine_name)"
     echo "  live:    ${id} ${ver}"
     echo "================================================================"
+}
+
+# A step the chain is about to run. The full header belongs to the
+# command that was typed; this says when each step inside it began, so a
+# reader can see the disk was erased at 20:08 and pacstrap took four
+# minutes, rather than finding one timestamp for the whole install.
+log_step() {
+    echo
+    echo "---- setup $1 ---- $(date '+%Y-%m-%d %H:%M:%S %Z') ----"
 }
 
 # Tee from here on. Called once; the chain in cmd_status inherits it.
@@ -200,6 +212,31 @@ confirm() {
 # the files rather than localectl, which needs a running systemd-localed.
 keymap_exists() {
     [[ -n $(find /usr/share/kbd/keymaps -name "${1}.map.gz" -print -quit 2>/dev/null) ]]
+}
+
+# A login name useradd will accept and that is not already taken. The
+# target's user database does not exist yet at 'setup host' time, so the
+# live system stands in for it: both are Arch, so a name that is a
+# system account here is almost certainly one there too. That matters
+# because create_accounts skips useradd when the name already resolves,
+# which would otherwise leave the machine with no daily user at all and
+# still pass the check.
+valid_login() {
+    local n=$1
+    if ! [[ ${n} =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+        echo "  lowercase, starting with a letter or _, at most 32 characters" >&2
+        return 1
+    fi
+    if [[ ${n} == root || ${n} == "${ADMIN}" ]]; then
+        echo "  ${n} is taken: root is root, and ${ADMIN} is the administrator" >&2
+        return 1
+    fi
+    if getent passwd "${n}" >/dev/null 2>&1; then
+        echo "  ${n} is a system account on this live system, so it will be one" >&2
+        echo "  on the target too: the account would not be created. Pick another." >&2
+        return 1
+    fi
+    return 0
 }
 
 # prompt VAR "Question" default
@@ -343,6 +380,7 @@ load_host() {
     TIMEZONE=${TIMEZONE:-UTC}
     LOCALE=${LOCALE:-en_US.UTF-8}
     KEYMAP=${KEYMAP:-us}
+    DAILY=${DAILY:-user}
     ADMIN_NOPASSWD=${ADMIN_NOPASSWD:-yes}
     ESP=$(part "${DISK}" 1)
     ROOT=$(part "${DISK}" 2)
@@ -365,6 +403,7 @@ SWAP_SIZE=${SWAP_SIZE}
 TIMEZONE=${TIMEZONE}
 LOCALE=${LOCALE}
 KEYMAP=${KEYMAP}
+DAILY=${DAILY}
 ADMIN_NOPASSWD=${ADMIN_NOPASSWD}
 EOF
     msg "Wrote ${HOST_FILE}"
@@ -922,6 +961,10 @@ cmd_host() {
         while prompt KEYMAP "Console keymap" "${KEYMAP}"; do
             keymap_exists "${KEYMAP}" && break
             echo "  no such keymap in /usr/share/kbd/keymaps" >&2
+        done
+        hint "your everyday login, alongside the fixed '${ADMIN}' account"
+        while prompt DAILY "Daily user" "${DAILY}"; do
+            valid_login "${DAILY}" && break
         done
         prompt ADMIN_NOPASSWD "Passwordless sudo for ${ADMIN}? (yes/no)" "${ADMIN_NOPASSWD}"
         [[ ${ADMIN_NOPASSWD} == y* ]] && ADMIN_NOPASSWD=yes || ADMIN_NOPASSWD=no
@@ -1560,6 +1603,7 @@ cmd_status() {
         else
             confirm "Run 'setup ${step}' now?" || return 0
         fi
+        log_step "${step}"
         "cmd_${step}" || return 1
     done
 }
@@ -1575,10 +1619,13 @@ main() {
         esac
     done
     [[ ${EUID} -eq 0 ]] || die "run setup as root on the live system"
-    local cmd=${1:-status}
+    local cmd=${1:-status} bare=0
+    (($#)) || bare=1
     (($#)) && shift
     trap on_exit EXIT
-    start_log "${cmd}" "$@"
+    # A bare `setup` is logged as "setup", not "setup status": the log is
+    # a record of what was typed.
+    if ((bare)); then start_log; else start_log "${cmd}" "$@"; fi
     case ${cmd} in
         status|host|disk|install|check|reboot) "cmd_${cmd}" "$@" ;;
         *) usage >&2; exit 2 ;;

@@ -62,6 +62,10 @@ SWAY_HOME_DIR=${SWAY_HOME_DIR:-}
 SWAY_HOME_URL=${SWAY_HOME_URL:-https://github.com/EnigmaCurry/sway-home}
 SWAY_HOME_REF=${SWAY_HOME_REF:-}
 HOST=setuptest
+# Deliberately not setup's default of "user": this is what proves a
+# customised daily login actually reaches useradd, the check and the
+# password file, instead of the default working by accident.
+DAILY=${DAILY:-dailytest}
 PASSWORD=setuptest
 DISK_SERIAL=setuptest
 DISK_SIZE=20G
@@ -298,7 +302,7 @@ desktop() {
     wait_ssh admin "${WORK}/serial-desktop.log"
 
     phase "Check the desktop"
-    vm admin@127.0.0.1 bash -s <<'EOF'
+    vm admin@127.0.0.1 "DAILY=${DAILY} bash -s" <<'EOF'
 set -u
 fail=0
 check() { if eval "$2" >/dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
@@ -306,16 +310,16 @@ check "sway is installed"          'command -v sway swaylock swayidle'
 check "greetd is running"          'systemctl is-active greetd'
 check "tuigreet is greeting"       'pgrep -u greeter tuigreet'
 check "nix-daemon.socket listens"  'systemctl is-active nix-daemon.socket'
-check "user can use the daemon"    'sudo -n -u user nix store info'
+check "${DAILY} can use the daemon" 'sudo -n -u "${DAILY}" nix store info'
 check "flakes are on"              'nix config show experimental-features | grep -qw flakes'
 check "no failed units"            '[ -z "$(systemctl --failed --no-legend)" ]'
 systemctl --failed --no-legend
 exit $fail
 EOF
 
-    phase "Desktop: sway-home for user (Home Manager)"
-    # As the book does it: hm-install in user's own systemd user manager,
-    # which has a session bus. (Under a bare 'sudo -iu user' there is none,
+    phase "Desktop: sway-home for ${DAILY} (Home Manager)"
+    # As the book does it: hm-install in the daily user's own systemd user
+    # manager, which has a session bus. (Under a bare 'sudo -iu' there is none,
     # and home-manager's dconf step starts Nix's dbus-daemon, which looks
     # for /etc/dbus-1/session.conf: Arch keeps it under /usr/share.)
     # hm-install asks for git's name and email unless this file exists.
@@ -331,31 +335,31 @@ EOF
         ref=${ref:-master}
     fi
     # shellcheck disable=SC2016 # expanded on the VM
-    vm admin@127.0.0.1 'sudo -n systemctl start "user@$(id -u user).service"'
-    vm admin@127.0.0.1 sudo -n systemd-run --machine=user@.host --user --pipe --wait --quiet --collect \
+    vm admin@127.0.0.1 "sudo -n systemctl start user@\$(id -u ${DAILY}).service"
+    vm admin@127.0.0.1 sudo -n systemd-run --machine="${DAILY}@.host" --user --pipe --wait --quiet --collect \
         -- bash -l -s <<EOF
 set -euo pipefail
 cd
 git clone --quiet --branch '${ref}' '${src}' ~/git/vendor/enigmacurry/sway-home
 mkdir -p ~/.config/git
-printf '[user]\n\tname = setup test\n\temail = user@setuptest\n' >~/.config/git/config.local
+printf '[user]\n\tname = setup test\n\temail = ${DAILY}@setuptest\n' >~/.config/git/config.local
 cd ~/git/vendor/enigmacurry/sway-home
 just hm-install
 EOF
-    # GPU drivers for programs from Nix: admin runs the user's setup command.
+    # GPU drivers for programs from Nix: admin runs the daily user's command.
     # shellcheck disable=SC2016 # expanded on the VM, as admin
-    vm admin@127.0.0.1 'sudo -n "$(sudo -n -iu user command -v non-nixos-gpu-setup)"'
+    vm admin@127.0.0.1 "sudo -n \"\$(sudo -n -iu ${DAILY} command -v non-nixos-gpu-setup)\""
 
     phase "Check sway-home"
-    vm admin@127.0.0.1 bash -s <<'EOF'
+    vm admin@127.0.0.1 "DAILY=${DAILY} bash -s" <<'EOF'
 set -u
 fail=0
 check() { if eval "$2" >/dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
-check "firefox (from Nix) runs as user"  'sudo -n -iu user firefox --version'
-check "foot, waybar and rofi are user's" 'sudo -n -iu user sh -c "command -v foot && command -v waybar && command -v rofi"'
+check "firefox (from Nix) runs as ${DAILY}" 'sudo -n -iu "${DAILY}" firefox --version'
+check "foot, waybar and rofi are ${DAILY}'s" 'sudo -n -iu "${DAILY}" sh -c "command -v foot && command -v waybar && command -v rofi"'
 check "/run/opengl-driver is linked"     '[ -e /run/opengl-driver ]'
-check "sway config is in place"          'sudo -n test -e ~user/.config/sway/config'
-sudo -n -iu user firefox --version
+check "sway config is in place"          'sudo -n test -e "$(getent passwd "${DAILY}" | cut -d: -f6)/.config/sway/config"'
+sudo -n -iu "${DAILY}" firefox --version
 exit $fail
 EOF
 
@@ -400,12 +404,13 @@ HOSTNAME=${HOST}
 DISK=/dev/disk/by-id/virtio-${DISK_SERIAL}
 ENCRYPT=${ENCRYPT}
 SWAP_SIZE=1g
+DAILY=${DAILY}
 TIMEZONE=UTC
 LOCALE=en_US.UTF-8
 KEYMAP=us
 ADMIN_NOPASSWD=yes
 EOF
-    printf 'root:%s\nadmin:%s\nuser:%s\n' "${PASSWORD}" "${PASSWORD}" "${PASSWORD}" >"${WORK}/passwords"
+    printf 'root:%s\nadmin:%s\n%s:%s\n' "${PASSWORD}" "${PASSWORD}" "${DAILY}" "${PASSWORD}" >"${WORK}/passwords"
 
     phase "Boot the stick"
     boot_vm "${WORK}/serial-live.log" \
@@ -459,7 +464,7 @@ EOF
     wait_ssh admin "${WORK}/serial-installed.log"
 
     phase "Check the installed system"
-    vm admin@127.0.0.1 bash -s <<'EOF'
+    vm admin@127.0.0.1 "DAILY=${DAILY} bash -s" <<'EOF'
 set -u
 fail=0
 check() { if eval "$2" >/dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
@@ -468,7 +473,7 @@ check "/ is the @ subvolume"      'findmnt -no SOURCE / | grep -q "\[/@\]$"'
 check "/home is @home"            'findmnt -no SOURCE /home | grep -q "\[/@home\]$"'
 check "swap is on"                'swapon --show=NAME --noheadings | grep -qx /swap/swapfile'
 check "admin has passwordless sudo" 'sudo -n true'
-check "user exists, not in wheel" 'id user && ! id -nG user | grep -qw wheel'
+check "${DAILY} exists, not in wheel" 'id "${DAILY}" && ! id -nG "${DAILY}" | grep -qw wheel'
 check "root cannot ssh"           'sudo -n sshd -T | grep -qix "permitrootlogin no"'
 check "passwords are refused"     'sudo -n sshd -T | grep -qix "passwordauthentication no"'
 check "host repo is admin's"      '[ "$(stat -c %U ~/arch/host.env)" = admin ]'

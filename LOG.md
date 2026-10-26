@@ -1829,3 +1829,35 @@ Both reboot prompts changed -- the chain's and `cmd_reboot`'s own
 before it keep their yes default. `--yes` still short-circuits before
 either branch, which `just test-vm` depends on; checked, and the
 unattended run still reboots and boots the installed disk.
+
+## The daily user has a name of its own (2026-10-26)
+
+`admin` stays hard-coded: the book, the sudoers drop-in, the host repo's
+owner and the `admin` command all name it. The everyday login was
+hard-coded too, as `user`; it is now asked for by `setup host`, kept in
+`host.env` and defaulted to `user` for anything written before this.
+
+The validation matters more than it looks. `create_accounts` is
+idempotent -- `id <name> || useradd` -- so a name that is already a
+system account on the target would make `useradd` be skipped, leaving
+the machine with *no* daily user while `setup check` still passed,
+because `id` succeeds. `valid_login` therefore rejects anything
+`getent passwd` already resolves on the live system, which stands in
+for the target: both are Arch, so a system account here is almost
+certainly one there. It also rejects `root`, `admin`, and anything
+useradd's own name rules would not take.
+
+`just test-vm` now installs as `dailytest` rather than `user`, so the
+customised path is what gets tested instead of the default passing by
+accident. That meant parameterising the DESKTOP=1 half, which named
+`user` in ten places; sway-home itself needed no change, since its
+standalone configuration takes `builtins.getEnv "USER"`. The three
+remote check blocks get the name through the environment
+(`DAILY=... bash -s`) because their heredocs are quoted -- the first
+attempt interpolated it into one of them and `set -u` on the VM
+stopped the run with `DAILY: unbound variable`, which is how the gap
+was found.
+
+Both suites pass as `dailytest`: base 1m46s 12/12, DESKTOP=1 4m39s
+23/23, with sway-home installed for `dailytest` and firefox, foot,
+waybar and rofi all checked under that name.
