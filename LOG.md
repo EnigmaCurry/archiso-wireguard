@@ -1115,3 +1115,35 @@ container forced: ext4 for the ESP (no vfat module) and a no-op
 device-mapper). `setup host` was exercised for the files it writes;
 `setup install`, `check` and `reboot` have not been run yet, because
 they need an Arch live system.
+
+## Unattended test: just test-vm (2026-10-26)
+
+ * `setup install --passwords FILE` takes `name:password` or
+   `name:$6$...` lines for root, admin and user and sets them with
+   `chpasswd` (`-e` for hashes) instead of prompting; the line is not
+   echoed. With `--yes` and `setup disk --confirm-wipe HOSTNAME`, the
+   whole install needs no input.
+ * `test-vm.sh` (`just test-vm [IMAGE]`) clones the newest x86_64 image
+   into `test/` (`cp -c` on APFS, `--reflink=auto` elsewhere),
+   provisions the copy with a throwaway ed25519 key through
+   `provision.sh` (which now honours `BOOMSTICK_SECRETS`), and boots it
+   in QEMU: q35, UEFI from qemu's own edk2 files or the distribution's
+   OVMF, the stick as USB storage, a blank 20 GB qcow2 as a virtio disk
+   with serial `setuptest` (so `/dev/disk/by-id/virtio-setuptest`),
+   user networking with sshd forwarded to localhost:2222, and
+   `-no-reboot` so a reboot ends the QEMU process.
+ * Over SSH it copies this tree's `setup` over the image's (so the
+   image does not need rebuilding to test a change), then runs
+   `setup host --from`, `setup --yes disk --confirm-wipe setuptest`,
+   `setup --yes install --passwords`, and `setup --yes reboot`. It boots
+   the installed disk alone, logs in as `admin`, checks the hostname,
+   the `@` and `@home` mounts, swap, passwordless sudo, `user` outside
+   `wheel`, sshd's effective `permitrootlogin` and
+   `passwordauthentication`, the host repo's owner and failed units,
+   then powers off and prints PASS.
+ * KVM on an x86_64 Linux host, TCG elsewhere, so on Apple Silicon it
+   is slow. `ENCRYPT=yes` types the LUKS passphrase over a pty and stops
+   after the install, since nothing types it at the next boot yet.
+ * Not run yet. An attempt to build the image and run it in a cloud
+   container failed at the first `pacman -Sy`: that container has no
+   direct DNS, only an HTTPS proxy.

@@ -27,6 +27,10 @@ build-usb:
 provision *target:
     ./provision.sh {{target}}
 
+# Install with setup into a QEMU VM, unattended, and check it boots (x86_64 image)
+test-vm *image:
+    ./test-vm.sh {{image}}
+
 # List the overlay files in an image and check that it contains no secrets
 inspect *image:
     ./inspect.sh {{image}}

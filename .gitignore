@@ -2,3 +2,5 @@
 # Never commit secrets/.
 /secrets/
 /out/
+# test-vm.sh's work directory
+/test/

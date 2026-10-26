@@ -557,6 +557,16 @@ asked for during `setup install`, and WiFi passphrases are copied from
 the live system into the target, never into the repo. It ends up in the
 installed system at `/home/admin/arch`.
 
+`setup install --passwords FILE` reads `name:password` (or
+`name:$6$...` hash) lines for `root`, `admin` and `user` instead of
+prompting, which together with `--yes` and `setup disk --confirm-wipe
+HOSTNAME` makes the whole install unattended. `just test-vm` does
+exactly that in a throwaway QEMU VM: it provisions a copy of the
+newest x86_64 image with a throwaway SSH key, installs onto a blank
+virtual disk, reboots into the result and checks it as `admin`. It
+needs `qemu` (`brew install qemu` on macOS); on Apple Silicon the VM is
+emulated, so expect it to take a while.
+
 `just provision` also copies `setup` onto the config partition as
 `archiso-config/bin/setup`, and the live system uses that copy in place
 of the one in the image, so a fix to the installer reaches a stick
@@ -572,6 +582,7 @@ without a rebuild.
 | `just config` | Create missing config files under `secrets/` as commented-out templates |
 | `just keygen` | Generate a WireGuard key pair for a stick (in a Podman container) |
 | `just provision [TARGET]` | Check `secrets/` and copy it onto a stick, device or image |
+| `just test-vm [IMAGE]` | Install with `setup` into a QEMU VM (x86_64, UEFI), unattended, then boot it and check it |
 | `just inspect [IMAGE]` | List an image's overlay files and check it contains no secrets |
 | `just clean` | Remove the cached pacman packages volumes |
 

@@ -11,8 +11,11 @@
 #   (no command)       show which steps are done and offer the next one
 #   host [--from SRC]  describe the machine: write the host repo, /root/arch
 #   disk [--mount]     partition, (encrypt,) format, mount under /mnt, swap
-#   install            install the base system, make it boot, network,
-#                      accounts, SSH, then run the check
+#   install [--passwords FILE]
+#                      install the base system, make it boot, network,
+#                      accounts, SSH, then run the check. FILE holds
+#                      name:password lines (or name:$6$... hashes) for
+#                      root, admin and user, for an unattended install
 #   check              the pre-flight check for the system under /mnt
 #   reboot             check, unmount and reboot (refuses if a check fails)
 #
@@ -46,6 +49,7 @@ ALARM_KEY=68B3537F39A313B3E574D06777193F152BDBE6A6
 
 YES=0
 CONFIRM_WIPE=
+PASSWORDS_FILE=
 # Whether this stick shipped Arch Linux ARM's keyring (see install_packages).
 ALARM_SHIPPED=1
 
@@ -793,11 +797,27 @@ create_accounts() {
 
 password_state() { { ask_target passwd -S "$1" 2>/dev/null || true; } | awk '{print $2}'; }
 
+# The name:secret line for one account from PASSWORDS_FILE, or empty.
+password_line() { grep -m1 "^$1:" "${PASSWORDS_FILE}" 2>/dev/null || true; }
+
 set_passwords() {
-    local u
+    local u line
     for u in root "${ADMIN}" "${DAILY}"; do
         if [[ $(password_state "${u}") == P ]]; then
             msg "  ${u}: password already set"
+            continue
+        fi
+        line=
+        [[ -n ${PASSWORDS_FILE} ]] && line=$(password_line "${u}")
+        if [[ -n ${line} ]]; then
+            # Not echoed with run: the line is the secret.
+            if [[ ${line#*:} == \$* ]]; then
+                echo "+ chpasswd -e  (${u}, from ${PASSWORDS_FILE})" >&2
+                arch-chroot "${TARGET}" chpasswd -e <<<"${line}"
+            else
+                echo "+ chpasswd  (${u}, from ${PASSWORDS_FILE})" >&2
+                arch-chroot "${TARGET}" chpasswd <<<"${line}"
+            fi
             continue
         fi
         msg "Set the password for ${u}:"
@@ -814,6 +834,16 @@ move_repo_in() {
 
 cmd_install() {
     local pkgs extras
+    while (($#)); do
+        case $1 in
+            --passwords)
+                PASSWORDS_FILE=${2:?--passwords needs a file}
+                [[ -f ${PASSWORDS_FILE} ]] || die "no such file: ${PASSWORDS_FILE}"
+                shift 2
+                ;;
+            *) die "setup install: unknown argument $1" ;;
+        esac
+    done
     load_host
     section "Install the system"
     layout_mounted || die "${TARGET} does not have the layout for ${HOSTNAME}: run 'setup disk' (or 'setup disk --mount')"

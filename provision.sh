@@ -23,7 +23,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SECRETS="${ROOT}/secrets"
+# BOOMSTICK_SECRETS: another secrets/ directory (test-vm.sh uses one).
+SECRETS="${BOOMSTICK_SECRETS:-${ROOT}/secrets}"
 TEMPLATES="${ROOT}/config-templates"
 CONFIG_DIR=archiso-config
 # Filesystem label build.sh gives the config partition, and how a
