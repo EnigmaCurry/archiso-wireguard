@@ -1332,3 +1332,9 @@ user's environment comes from Nix with Home Manager and sway-home.
    /usr/share/dbus-1 (Arch). test-vm now runs it in `user`'s systemd
    user manager (`systemd-run --machine=user@.host --user`), which has
    a bus; the book's page uses `sudo machinectl shell user@`.
+   With that, `SWAY_HOME_REF=arch DESKTOP=1 just test-vm` passed on the
+   Linux host (KVM) in 4m01s: hm-install finished, firefox from Nix
+   (153.0.1) runs as `user`, foot, waybar and rofi are there,
+   /run/opengl-driver is linked after `non-nixos-gpu-setup`, the sway
+   config is in place, and `admin diff` finds no drift. Logging in to
+   sway, and whether the GPU drivers draw, remain untested.
