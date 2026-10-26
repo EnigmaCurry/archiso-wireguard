@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# Update this live system's helpers from the public repository, on the
+# stick as well as in the running system.
+#
+# Usage: boomstick-update [--repo URL] [--ref REF] [--dry-run]
+#
+# 'just provision' already updates boomstick/bin/ from a checkout on
+# your workstation. This does the same job from the stick itself, over
+# the network, for when the workstation is not there: it writes the
+# helpers to boomstick/bin/ (so they survive a reboot, because
+# boomstick-config installs them on every boot) and to /usr/local/bin
+# (so they take effect now, without one).
+#
+# It always shows a diff of what would change and asks before writing.
+# Enter declines.
+#
+# --ref defaults to the repository's default branch, which is not
+# necessarily where the image came from: a stick built from a topic
+# branch will find the default branch has none of its helpers, and this
+# says so rather than reporting everything up to date.
+#
+# What it does NOT do: verify anything. The repository's commits are not
+# signed, so the SHA printed here is provenance -- a record of what was
+# pulled -- and not proof of who wrote it. The diff is the safeguard:
+# read it. Everything here runs as root on a machine that is about to
+# repartition a disk.
+#
+# boomstick-config is deliberately not updated: it is what installs
+# everything else at boot, and a broken copy would take configuration
+# down with it on every later boot. Only a rebuild changes that.
+#
+# 'admin' needs no mention of its own -- setup carries it, and writes it
+# into the host repo during an install -- so updating setup updates it.
+set -euo pipefail
+
+REPO=${BOOMSTICK_REPO:-https://github.com/EnigmaCurry/boomstick}
+REF=${BOOMSTICK_REF:-}
+DRY=0
+FAT_LABEL=${FAT_LABEL:-BOOMSTICK}
+CONFIG_DIR=${CONFIG_DIR:-boomstick}
+BIN=/usr/local/bin
+# Installed by boomstick-config at boot, so never replaced from here.
+NEVER=(boomstick-config)
+
+WORK=
+MNT=
+die()  { echo "ERROR: $*" >&2; exit 1; }
+msg()  { echo "$*"; }
+warn() { echo "WARNING: $*" >&2; }
+
+cleanup() {
+    [[ -n ${MNT} ]] && umount "${MNT}" 2>/dev/null
+    [[ -n ${MNT} ]] && rmdir "${MNT}" 2>/dev/null
+    [[ -n ${WORK} ]] && rm -rf "${WORK}"
+    return 0
+}
+trap cleanup EXIT
+
+while (($#)); do
+    case $1 in
+        --repo) REPO=${2:?--repo needs a URL}; shift 2 ;;
+        --ref)  REF=${2:?--ref needs a branch, tag or commit}; shift 2 ;;
+        --dry-run) DRY=1; shift ;;
+        -h|--help) sed -n '2,/^set -euo/p' "$0" | sed -e '/^set -euo/d' -e 's/^# \{0,1\}//'; exit 0 ;;
+        *) die "unknown argument: $1" ;;
+    esac
+done
+
+[[ ${EUID} -eq 0 ]] || die "run boomstick-update as root"
+command -v git >/dev/null || die "git is not installed on this live system"
+
+# Replacing setup while an install is running would be a bad afternoon.
+if findmnt -rn /mnt >/dev/null 2>&1; then
+    die "something is mounted at /mnt: an install looks to be in progress. Finish or reboot first."
+fi
+
+# --- the stick --------------------------------------------------------------
+# copytoram means the live system keeps running without it, so it may
+# simply not be here.
+dev=$(blkid -L "${FAT_LABEL}" 2>/dev/null) || dev=
+[[ -n ${dev} ]] \
+    || die "no ${FAT_LABEL} filesystem: the stick is not plugged in. This system runs from RAM, so there is nothing to update until it is back."
+
+# --- fetch ------------------------------------------------------------------
+WORK=$(mktemp -d)
+msg "Fetching ${REPO}${REF:+ at ${REF}} ..."
+# shellcheck disable=SC2086 # REF is one word or absent
+git clone --quiet --depth 1 ${REF:+--branch "${REF}"} "${REPO}" "${WORK}/repo" \
+    || die "could not clone ${REPO}${REF:+ at ${REF}}"
+sha=$(git -C "${WORK}/repo" rev-parse HEAD)
+branch=$(git -C "${WORK}/repo" rev-parse --abbrev-ref HEAD)
+subject=$(git -C "${WORK}/repo" log -1 --format='%s')
+cdate=$(git -C "${WORK}/repo" log -1 --format='%ad' --date=format:'%Y-%m-%d %H:%M:%S %z')
+src=${WORK}/repo/airootfs${BIN}
+[[ -d ${src} ]] || die "${REPO} has no airootfs${BIN}: is this the right repository?"
+
+echo
+echo "================================================================"
+echo "  from:    ${REPO}"
+echo "  ref:     ${REF:-${branch} (default branch)}"
+echo "  commit:  ${sha}"
+echo "  dated:   ${cdate}"
+echo "  message: ${subject}"
+echo "  signed:  no -- these commits are unsigned, so this is a record"
+echo "           of what was pulled, not proof of who wrote it."
+echo "================================================================"
+
+# --- what would change ------------------------------------------------------
+skip() { local n; for n in "${NEVER[@]}"; do [[ $1 == "${n}" ]] && return 0; done; return 1; }
+
+changed=()
+compared=()
+for f in "${src}"/*; do
+    [[ -f ${f} ]] || continue
+    name=$(basename "${f}")
+    skip "${name}" && continue
+    # Only helpers this image already owns, as boomstick-config does.
+    [[ -e ${BIN}/${name} ]] || { msg "  ${name}: not part of this image, skipped"; continue; }
+    compared+=("${name}")
+    if cmp -s "${f}" "${BIN}/${name}"; then continue; fi
+    changed+=("${name}")
+done
+
+# Nothing to compare is not the same as nothing to change, and saying
+# "up to date" for it would be a lie that reads like reassurance. It
+# means the ref does not know this image's helpers at all -- typically
+# a default branch older than the image, or the wrong repository.
+if ((${#compared[@]} == 0)); then
+    echo
+    warn "${REF:-${branch}} has none of this image's helpers in airootfs${BIN}."
+    warn "That ref is probably older than this image, or is the wrong repository."
+    die "nothing comparable found: name the branch or tag you meant with --ref"
+fi
+
+if ((${#changed[@]} == 0)); then
+    msg "Already up to date: ${compared[*]} all match ${sha:0:7}."
+    exit 0
+fi
+
+echo
+echo "Would change: ${changed[*]}"
+for name in "${changed[@]}"; do
+    echo
+    echo "---- ${name} ----"
+    # diff exits 1 when files differ, which is the whole point.
+    diff -u --label "now: ${BIN}/${name}" --label "new: ${sha:0:7}/${name}" \
+        "${BIN}/${name}" "${src}/${name}" || true
+done
+echo
+
+if ((DRY)); then
+    msg "--dry-run: nothing written."
+    exit 0
+fi
+
+read -rp "? Install these on the stick and in this system? (y/N): " answer
+[[ ${answer} == [yY]* ]] || { msg "Nothing written."; exit 0; }
+
+# --- write ------------------------------------------------------------------
+MNT=$(mktemp -d)
+mount "${dev}" "${MNT}" || die "could not mount ${dev}"
+[[ -d ${MNT}/${CONFIG_DIR} ]] \
+    || die "${dev} has no ${CONFIG_DIR}/ directory: is this a ${FAT_LABEL}?"
+mkdir -p "${MNT}/${CONFIG_DIR}/bin"
+for name in "${changed[@]}"; do
+    install -m 0644 "${src}/${name}" "${MNT}/${CONFIG_DIR}/bin/${name}"
+    msg "  ${CONFIG_DIR}/bin/${name}  (on the stick, for every later boot)"
+done
+# A record that travels with the stick.
+printf '%s  ref=%s  %s  updated: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" \
+    "${REF:-${branch}}" "${sha}" "${changed[*]}" >>"${MNT}/${CONFIG_DIR}/UPDATES.txt"
+sync
+umount "${MNT}"; rmdir "${MNT}"; MNT=
+
+for name in "${changed[@]}"; do
+    install -m 0755 "${src}/${name}" "${BIN}/${name}"
+    msg "  ${BIN}/${name}  (in this system, now)"
+done
+
+echo
+msg "Updated to ${sha:0:7} from ${REPO}."
+msg "Recorded in ${CONFIG_DIR}/UPDATES.txt on the stick."

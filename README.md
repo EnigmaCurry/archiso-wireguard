@@ -618,6 +618,40 @@ without a rebuild.
 | `just keygen` | Generate a WireGuard key pair for a stick (in a Podman container) |
 | `just provision [TARGET]` | Check `secrets/` and copy it onto a stick (a mounted config partition or a `/dev` node) |
 | `just adopt [TARGET]` | The inverse: copy an existing stick's secrets back into `secrets/` |
+
+On the stick itself, `boomstick-update` does what `just provision` does
+to `bin/`, but over the network and without a workstation:
+
+```
+boomstick-update [--repo URL] [--ref REF] [--dry-run]
+```
+
+It clones the repository, prints where it came from and the commit it
+resolved to, **shows a diff** of every helper that would change, and
+asks before writing. Enter declines. What it accepts goes to
+`boomstick/bin/` on the stick, so it survives a reboot, *and* to
+`/usr/local/bin`, so it takes effect without one. Each run appends a
+line to `boomstick/UPDATES.txt`.
+
+`setup` carries `admin` inside it, so updating `setup` updates both.
+`boomstick-config` is never replaced this way: it is what installs the
+others at boot, and a broken copy would take configuration down with
+it on every later boot.
+
+It refuses to run when something is mounted at `/mnt` (an install in
+progress), and when the stick is not plugged in — with `copytoram` the
+live system keeps running without it, but then there is nothing to
+write to.
+
+`--ref` defaults to the repository's default branch, which is not
+necessarily where your stick came from. A stick built from a topic
+branch will find the default branch has none of its helpers, and
+`boomstick-update` says so rather than reporting everything up to date.
+
+It verifies nothing. The commits are unsigned, so the SHA it prints is
+a record of what was pulled, not proof of who wrote it, and this runs
+as root on a machine that is about to repartition a disk. The diff is
+the safeguard: read it.
 | `just test-vm [IMAGE]` | Install with `setup` into a QEMU VM (x86_64, UEFI), unattended, then boot it and check it |
 | `just inspect [IMAGE]` | List an image's overlay files and check it contains no secrets |
 | `just clean` | Remove the cached pacman packages volumes |

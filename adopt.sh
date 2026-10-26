@@ -31,7 +31,7 @@ CONFIG_DIR=boomstick
 FAT_LABEL=${FAT_LABEL:-BOOMSTICK}
 
 # Written by this repository, never adopted from a stick.
-NOT_SECRETS=(README.txt bin)
+NOT_SECRETS=(README.txt bin UPDATES.txt)
 
 FORCE=0
 MOUNTED_DEV=

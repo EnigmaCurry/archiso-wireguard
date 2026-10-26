@@ -1861,3 +1861,47 @@ was found.
 Both suites pass as `dailytest`: base 1m46s 12/12, DESKTOP=1 4m39s
 23/23, with sway-home installed for `dailytest` and firefox, foot,
 waybar and rofi all checked under that name.
+
+## boomstick-update: the stick updates itself (2026-10-26)
+
+`just provision` writes `boomstick/bin/` from a checkout on the
+workstation. `boomstick-update` does the same job from the stick, over
+the network, for when the workstation is not there -- which for a tool
+built for remote headless installs is a real situation. It writes to
+`boomstick/bin/` (so a reboot keeps it, because boomstick-config
+installs bin/ on every boot) and to `/usr/local/bin` (so it takes
+effect without one). That is the "update live while developing, and
+have it stick" ask.
+
+Mandatory diff, confirmation defaulting to no, `--ref` defaulting to
+the repository's default branch, `--dry-run` to look without asking.
+`setup` carries `admin` as a heredoc, so one file covers both.
+`boomstick-config` is never replaced from here, for the same reason
+provision does not ship it.
+
+Testing it in a booted live VM against the real GitHub repository found
+the one bug that mattered. The default branch is `master`, which
+predates all of this work: it has `arch-iso-*` helpers and no `setup`.
+Every file was therefore skipped as "not part of this image", nothing
+was left to compare, and the result was reported as
+
+    Already up to date: every helper matches eb92ac0.
+
+which is a lie that reads like reassurance. "Nothing to compare" and
+"nothing to change" are now different outcomes: the first warns that
+the ref has none of this image's helpers and refuses, naming `--ref`.
+The second lists what it compared, so "up to date" says what it checked.
+
+Verified in that VM, seven cases: no stick, an install in progress, the
+default branch having nothing comparable, `--ref setup` up to date, a
+forced local edit shown as a unified diff under `--dry-run`, declining,
+and accepting -- after which the local edit was gone, the stick's copy
+matched the running one, and `UPDATES.txt` recorded
+
+    <date>  ref=setup  <sha>  updated: setup
+
+It verifies nothing. The commits are unsigned, so the SHA is provenance
+and not proof, and this runs as root on a machine about to repartition
+a disk. Signing commits and checking `git verify-commit` is the upgrade
+path; until then the diff is the safeguard, which is why it is not
+optional.

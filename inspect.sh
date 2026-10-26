@@ -36,6 +36,7 @@ OVERLAY_PATHS=(
     usr/local/bin/boomstick-motd
     usr/local/bin/setup
     usr/local/bin/boomstick-cowspace
+    usr/local/bin/boomstick-update
     etc/systemd/system/boomstick-config.service
     etc/systemd/system/sysinit.target.wants/boomstick-config.service
     etc/systemd/system/boomstick-motd.service

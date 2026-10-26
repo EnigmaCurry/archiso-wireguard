@@ -131,7 +131,7 @@ find_target() {
 # configuration on every later boot with no way back in. It stays
 # frozen in the image, where only a rebuild can change it.
 HELPER_DIR=${ROOT}/airootfs/usr/local/bin
-HELPERS=(setup boomstick-motd boomstick-webhook boomstick-cowspace)
+HELPERS=(setup boomstick-motd boomstick-webhook boomstick-cowspace boomstick-update)
 
 # What gets copied: everything in secrets/, the README for whoever
 # plugs the stick into another machine, and the helpers above.
