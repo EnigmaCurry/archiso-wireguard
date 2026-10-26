@@ -1679,3 +1679,42 @@ writes. Shipped in bin/, so once an image carries the generalised
 boomstick-config a fix to it needs no rebuild. None of this persists:
 the overlay is RAM either way. Persistence would mean cow_device= on a
 second, non-FAT partition, which this layout does not have.
+
+## just adopt: read a stick back into secrets/ (2026-10-26)
+
+provision.sh assumes secrets/ is the source and the stick is the copy,
+which holds when you built the stick on the machine that holds secrets/.
+In production it is the other way round: the stick exists, and the only
+copy of its WireGuard key and the SSH host keys it made on first boot is
+the stick itself. Wipe it and they are gone.
+
+`adopt.sh` is the inverse. It finds the stick the same three ways
+provision does (the BOOMSTICK label, a mount point, a /dev node mounted
+with udisksctl so the files come out owned by the caller) and copies
+back everything this repository cannot regenerate: wifi/*.psk,
+wireguard/wg0.conf, ssh/authorized_keys, webhook.env and ssh/host/.
+README.txt and bin/ are skipped -- they come from here, not from a
+stick. Files are installed 0600 into directories 0700, because FAT
+carries no modes to copy.
+
+It refuses to overwrite a populated secrets/ and lists what clashed,
+all-or-nothing rather than half-applied, so running it against the
+wrong stick cannot quietly replace a working configuration. --force
+when the stick is the one to keep.
+
+Adopting ssh/host/ means a rebuilt stick keeps its SSH identity, which
+is a small thing that saved real annoyance today: writing a fresh image
+gave the Pi new host keys and `ssh boomstick` refused until the old
+entry was cleared.
+
+Tested against a synthetic config partition rather than the real stick,
+which was in the Pi at the time: a fresh adopt (6 files, modes checked),
+the refusal path, --force, a partial clash, a directory that is not a
+BOOMSTICK, a missing target, --help, and a full round trip -- adopt from
+one stick, provision a second, and all six secrets compare equal while
+the new stick gets its bin/ helpers and README.txt from the repository.
+
+That round trip found a real bug: `((copied++))` returns the value from
+*before* the increment, so it exits 1 on the first file and set -e ended
+the script after copying exactly one. Both counters are plain
+assignments now.

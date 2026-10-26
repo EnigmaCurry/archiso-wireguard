@@ -27,6 +27,10 @@ build-usb:
 provision *target:
     ./provision.sh {{target}}
 
+# Copy an existing stick's secrets back into secrets/ (do this before you wipe it)
+adopt *target:
+    ./adopt.sh {{target}}
+
 # Install with setup into a QEMU VM, unattended, and check it boots (x86_64 image)
 test-vm *image:
     ./test-vm.sh {{image}}

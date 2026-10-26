@@ -617,9 +617,42 @@ without a rebuild.
 | `just config` | Create missing config files under `secrets/` as commented-out templates |
 | `just keygen` | Generate a WireGuard key pair for a stick (in a Podman container) |
 | `just provision [TARGET]` | Check `secrets/` and copy it onto a stick (a mounted config partition or a `/dev` node) |
+| `just adopt [TARGET]` | The inverse: copy an existing stick's secrets back into `secrets/` |
 | `just test-vm [IMAGE]` | Install with `setup` into a QEMU VM (x86_64, UEFI), unattended, then boot it and check it |
 | `just inspect [IMAGE]` | List an image's overlay files and check it contains no secrets |
 | `just clean` | Remove the cached pacman packages volumes |
+
+## Adopting a stick you already have
+
+`secrets/` is the source and the stick is the copy, which assumes you
+built the stick on the machine that holds `secrets/`. In production it
+is often the other way round: the stick exists, and the only copy of
+its WireGuard key and its SSH host keys is on the stick itself.
+
+`just adopt` reads a stick back into `secrets/`, so do this *before* you
+wipe or rebuild one:
+
+```
+git clone https://github.com/EnigmaCurry/boomstick
+cd boomstick
+just adopt            # finds the stick by its BOOMSTICK label
+```
+
+It takes what the repository cannot regenerate -- the WiFi PSKs, the
+WireGuard config, `authorized_keys`, `webhook.env`, and the SSH host
+keys the stick wrote on its first boot -- and not `README.txt` or
+`bin/`, which come from here. Files land `0600` in directories `0700`,
+because FAT carries no modes of its own.
+
+It **refuses to overwrite** an existing `secrets/` and lists what
+clashed, so pointing it at the wrong stick cannot quietly replace a
+working configuration. `--force` when the stick really is the one to
+keep.
+
+Adopting the host keys means a rebuilt stick keeps its SSH identity, so
+`ssh boomstick` does not start warning about a changed host key. If you
+would rather it got new ones, delete `secrets/ssh/host/` before
+provisioning.
 
 ## If a stick is lost
 
