@@ -1041,7 +1041,7 @@ install_packages() {
     mapfile -t -O "${#pkgs[@]}" pkgs < <(repo_packages)
     if [[ -x ${TARGET}/usr/bin/pacman ]]; then
         # Already installed: only add what is missing.
-        in_target pacman -S --needed --noconfirm "${pkgs[@]}"
+        SNAP_PAC_SKIP=y in_target pacman -S --needed --noconfirm "${pkgs[@]}"
         return
     fi
     # On a stick that did not ship ALARM's keyring, the trust signed in
@@ -1050,7 +1050,13 @@ install_packages() {
     if [[ $(arch) == aarch64 ]] && ((!ALARM_SHIPPED)); then
         flags=()
     fi
-    run pacstrap "${flags[@]}" "${TARGET}" "${pkgs[@]}"
+    # SNAP_PAC_SKIP: snap-pac's post hook runs inside the chroot, where
+    # snapper cannot look up its own user yet and dies with "fatal
+    # library error, lookup self". There is nothing to snapshot anyway --
+    # the subvolume is minutes old and snapper's root config arrives in a
+    # later stage -- so the only thing the hook produced was an error
+    # that looked like a failed install.
+    SNAP_PAC_SKIP=y run pacstrap "${flags[@]}" "${TARGET}" "${pkgs[@]}"
 }
 
 write_fstab() {

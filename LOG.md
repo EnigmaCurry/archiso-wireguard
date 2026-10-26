@@ -1718,3 +1718,45 @@ That round trip found a real bug: `((copied++))` returns the value from
 *before* the increment, so it exits 1 on the first file and set -e ended
 the script after copying exactly one. Both counters are plain
 assignments now.
+
+## A real Pi 5 install, and two warnings that only look like failures (2026-10-26)
+
+`setup` carried a Pi 500 from nothing to the reboot prompt in one run,
+chaining host -> disk -> install -> reboot and asking before each, with
+all eleven checks green. 194 packages, pulled from the mirrors rather
+than from the stick: pacstrap syncs its own databases, so an installed
+machine is always current even when the stick that installed it is old.
+`emacs-nox` from packages.txt came along, and brought gcc with it.
+
+Two things in that log read as errors and are not:
+
+ * `(16/16) Performing snapper post snapshots ... fatal library error,
+   lookup self` -- snap-pac's post hook, running inside the chroot
+   pacstrap just made, where snapper cannot look up its own user
+   through NSS. Nothing existed to snapshot: the subvolume was minutes
+   old and snapper's root config is installed in a later stage. Fixed
+   by setting `SNAP_PAC_SKIP=y` (snap-pac's own documented switch) for
+   pacstrap and for the already-installed `pacman -S --needed` path.
+ * `warning: directory permissions differ on /mnt/boot/ filesystem:
+   700 package: 755`, three times, from `filesystem`,
+   `raspberrypi-bootloader` and `linux-rpi-16k`. The ESP is mounted
+   fmask=0077,dmask=0077 on purpose -- it is how bootctl stops warning
+   that its random seed is world-readable -- and those packages would
+   rather it were 755. Deliberate, and left alone.
+
+Also seen and expected: `sgdisk` complaining about an invalid GPT and a
+secondary table overlapping the last partition, which is the hybrid
+MBR/GPT the previous OS left on that NVMe, destroyed as intended; and
+`sd-vconsole: /etc/vconsole.conf not found` on pacstrap's own mkinitcpio
+run, which is why `setup` runs `mkinitcpio -P` again after writing it --
+the second run is clean.
+
+## The rebuilt hybrid image (2026-10-26)
+
+First hybrid carrying the frozen-half work. Verified by extracting both
+squashfs images rather than trusting the file listing: `install_bin` (so
+anything in `boomstick/bin/` is installed, not just setup, and
+`install_setup` is gone), the motd's `BOOK_URL`, and
+`boomstick-cowspace` with its half-of-RAM logic and unit, in both the
+x86_64 and aarch64 halves. `ghostty-terminfo` remains the only package
+Arch Linux ARM lacks.
