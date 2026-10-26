@@ -278,7 +278,11 @@ machine_name() {
 
 # The packages every install gets, by hardware: the book's PKGS block.
 base_packages() {
-    local pkgs=(base btrfs-progs cryptsetup sudo openssh iwd vim)
+    # less: git's pager, and an optional dependency rather than a hard
+    # one, so 'git log' in the host repo fails outright without it --
+    # "cannot run less: No such file or directory". The host repo is a
+    # git repository you are meant to read, so it is not optional here.
+    local pkgs=(base btrfs-progs cryptsetup sudo openssh iwd vim less)
     # Maintenance: the host repo is a git repository, aconfmgr needs
     # pacutils and expect, snapper and snap-pac take the snapshots.
     pkgs+=(git pacutils expect snapper snap-pac)
@@ -575,6 +579,9 @@ EOF
 #   upgrade   refuse if the machine drifted, then pacman -Syu (which
 #             snap-pac snapshots before and after), apply, and report
 #             new .pacnew files and whether to reboot
+#   git ...   run git in the host repo, from wherever you happen to be:
+#             'admin git log', 'admin git commit -am "..."',
+#             'admin git push'. Everything after 'git' goes to git.
 #
 # ARGS go to aconfmgr (to pacman as well, for upgrade): --yes answers
 # its questions.
@@ -588,6 +595,15 @@ usage() { sed -n '2,/^set -euo/p' "$0" | sed -e '/^set -euo/d' -e 's/^# \{0,1\}/
 
 # The aconfmgr commands 99-unsorted.sh holds, without its comments.
 drift() { grep -vE '^\s*(#|$)' "$1" 2>/dev/null || true; }
+
+# git, in the host repo, from anywhere. The repo is the record of this
+# machine, and reaching for it should not mean remembering where it
+# lives or cd-ing there first. git's own exit status is passed back, so
+# 'admin git diff --quiet' still works as a test.
+cmd_git() {
+    [[ -d ${HOST_REPO}/.git ]] || die "${HOST_REPO} is not a git repository"
+    git -C "${HOST_REPO}" "$@"
+}
 
 cmd_diff() {
     local tmp out
@@ -656,7 +672,7 @@ main() {
     local cmd=${1:-}
     (($#)) && shift
     case ${cmd} in
-        diff|save|apply|upgrade) "cmd_${cmd}" "$@" ;;
+        diff|save|apply|upgrade|git) "cmd_${cmd}" "$@" ;;
         -h|--help|help) usage ;;
         *) usage >&2; exit 2 ;;
     esac
@@ -811,6 +827,10 @@ IgnorePath '/etc/.pwd.lock'
 
 # Secrets and identity, made on first boot.
 IgnorePath '/etc/ssh/ssh_host_*'
+# WireGuard private keys. Seeded here rather than added by 'setup
+# wireguard', so that a key put in /etc/wireguard by any means -- that
+# command, or by hand later -- is never recorded into this repo.
+IgnorePath '/etc/wireguard/*'
 IgnorePath '/etc/machine-id'
 IgnorePath '/etc/pacman.d/gnupg'
 
@@ -1662,6 +1682,16 @@ cmd_wireguard() {
     fi
 
     commit_repo "${HOST_REPO}" "setup wireguard: ${HOSTNAME}"
+    # In the usual order this step runs *after* 'setup install', which
+    # has already copied the repo into the target. The edits above would
+    # then exist only on the live system -- which is RAM -- and the
+    # installed machine would boot without them. That is not academic:
+    # without the ignore rule, aconfmgr records the private key into the
+    # repo on the first 'admin save'.
+    if [[ -d ${TARGET}/home/${ADMIN}/arch ]]; then
+        move_repo_in
+        msg "  host repo re-synced into ${TARGET}/home/${ADMIN}/arch"
+    fi
     echo
     ok wireguard "wg0 for ${HOSTNAME}${addr:+ at ${addr}}"
     msg "It comes up on the next boot. Check it there with: wg show"

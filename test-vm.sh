@@ -484,6 +484,14 @@ check "passwords are refused"     'sudo -n sshd -T | grep -qix "passwordauthenti
 check "host repo is admin's"      '[ "$(stat -c %U ~/arch/host.env)" = admin ]'
 check "no failed units"           '[ -z "$(systemctl --failed --no-legend)" ]'
 check "admin and aconfmgr are installed" 'command -v admin && aconfmgr --help'
+# less is git's pager and only an optional dependency, so without it
+# 'git log' in the host repo fails outright rather than just not paging.
+check "less is installed"         'command -v less'
+# admin git reaches the host repo from wherever you are.
+check "admin git works anywhere"  'cd /tmp && admin git log --oneline -1'
+# A WireGuard key must never be recorded into the repo: the seeded
+# ignore rule has to be there whether or not setup wireguard ever ran.
+check "/etc/wireguard is ignored"  'grep -q "IgnorePath .[/]etc/wireguard" ~/arch/aconfmgr/90-ignore.sh'
 check "snapper has a root config" 'sudo -n snapper --no-dbus -c root list'
 systemctl --failed --no-legend
 exit $fail

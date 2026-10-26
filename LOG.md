@@ -2057,3 +2057,50 @@ surprise. `setup check` reports both counts and still only requires
 `admin` to have one.
 
 `just test-vm` compares the two files: 14 checks, 1m45s.
+
+## The ignore rule went to the wrong repo (2026-10-26)
+
+Reported from an installed Pi: `git status` in `~/arch` offering to
+commit `aconfmgr/files/etc/wireguard/wg0.conf` -- the private key, saved
+into the repo by aconfmgr, despite `setup wireguard` having added an
+`IgnorePath` for it.
+
+The rule was written. To the wrong repo. `setup wireguard` edits
+`${HOST_REPO}`, which is `/root/arch` on the live system, and in the
+documented order it runs *after* `setup install`, which has already
+copied the repo to `${TARGET}/home/admin/arch`. So the three edits --
+`wireguard-tools`, `wg-quick@wg0`, and the ignore rule -- lived only in
+RAM and died at the reboot. `cmd_wireguard` never called
+`move_repo_in`; it does now, when the target's repo already exists.
+
+The ignore rule itself is no longer `setup wireguard`'s to add, either.
+`/etc/wireguard/*` is seeded into `90-ignore.sh` beside
+`/etc/ssh/ssh_host_*`, because it is a secrets directory whether or not
+that command ever runs -- a key dropped there by hand would have been
+recorded just the same. `just test-vm` asserts the rule is present on
+every installed machine: 17 checks.
+
+Remediation on a machine that already recorded one, given the key was
+staged but never committed:
+
+    git reset
+    rm -rf aconfmgr/files/etc/wireguard
+    printf "\nIgnorePath '/etc/wireguard/*'\n" >> aconfmgr/90-ignore.sh
+
+## less, and admin git (2026-10-26)
+
+`git log` in the host repo failed on every installed machine:
+
+    error: cannot run less: No such file or directory
+    fatal: unable to execute pager 'less'
+
+`less` is an *optional* dependency of git, and `base` does not bring
+it, so git's default pager was missing. The install log had said so all
+along -- "less: the default pager for git" -- and nobody read it. It is
+in the base set now.
+
+`admin git ...` runs git in the host repo from any directory, so
+reading the record of a machine does not mean remembering where it
+lives: `admin git log`, `admin git commit -am "..."`, `admin git push`.
+git's exit status is passed back, so `admin git diff --quiet` works as
+a test.
