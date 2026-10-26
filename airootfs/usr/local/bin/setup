@@ -658,6 +658,10 @@ IgnorePath '/swap'
 IgnorePath '/.snapshots'
 # The Nix store, if you install Nix: its own subvolume, managed by nix.
 IgnorePath '/nix'
+# Home Manager's GPU drivers for programs from Nix (non-nixos-gpu-setup):
+# links into the Nix store that move whenever the drivers do.
+IgnorePath '/etc/tmpfiles.d/non-nixos-gpu.conf'
+IgnorePath '/etc/egl/egl_external_platform.d/*_nix_gpu.json'
 
 # aconfmgr's own checkout (setup installs it; see 40-system.sh).
 IgnorePath '/usr/local/lib/aconfmgr'

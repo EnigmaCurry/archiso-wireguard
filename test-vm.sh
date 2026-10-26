@@ -22,8 +22,12 @@
 #      not describe.
 #   6. With DESKTOP=1: adds desktop/ (the book's Desktop chapter) to the
 #      host repo, runs 'admin apply', reboots, and checks that greetd
-#      greets, that 'user' can reach the Nix daemon, and that 'admin
-#      diff' still finds no drift. Logging in to sway is not tested.
+#      greets and that 'user' can reach the Nix daemon. Then, as 'user',
+#      installs sway-home with Home Manager (hm-install), has admin run
+#      non-nixos-gpu-setup, and checks firefox and /run/opengl-driver,
+#      and that 'admin diff' still finds no drift. Logging in to sway is
+#      not tested. The Nix store this fills is over 12 GiB, so the disk
+#      is 40 GB in this mode, and under TCG it takes hours.
 #
 # Needs qemu (brew install qemu, or pacman -S qemu-full), podman (as for
 # the build, for provisioning) and ssh. On Apple Silicon the VM runs
@@ -35,6 +39,9 @@
 #                    over a pty, as "setuptest")
 #   KEEP=1           leave the VM's disks in test/ afterwards
 #   DESKTOP=1        go on to install the desktop (step 6)
+#   SWAY_HOME_DIR    a sway-home checkout to install in step 6, as a git
+#                    bundle of its SWAY_HOME_REF (default HEAD); without
+#                    it, SWAY_HOME_URL (GitHub) at SWAY_HOME_REF (master)
 #   SSH_PORT=2222    host port forwarded to the VM's sshd
 #   FW_CODE, FW_VARS the x86_64 UEFI firmware's code and vars files,
 #                    when they are somewhere this script doesn't look
@@ -47,6 +54,9 @@ SSH_PORT=${SSH_PORT:-2222}
 ENCRYPT=${ENCRYPT:-no}
 KEEP=${KEEP:-0}
 DESKTOP=${DESKTOP:-0}
+SWAY_HOME_DIR=${SWAY_HOME_DIR:-}
+SWAY_HOME_URL=${SWAY_HOME_URL:-https://github.com/EnigmaCurry/sway-home}
+SWAY_HOME_REF=${SWAY_HOME_REF:-}
 HOST=setuptest
 PASSWORD=setuptest
 DISK_SERIAL=setuptest
@@ -237,6 +247,45 @@ systemctl --failed --no-legend
 exit $fail
 EOF
 
+    phase "Desktop: sway-home for user (Home Manager)"
+    # As the book does it: a shell as user from admin's, then hm-install.
+    # hm-install asks for git's name and email unless this file exists.
+    local src ref=${SWAY_HOME_REF}
+    if [[ -n ${SWAY_HOME_DIR} ]]; then
+        # A local checkout (unpushed work): a branch of it, as a bundle.
+        [[ -n ${ref} ]] || ref=$(git -C "${SWAY_HOME_DIR}" rev-parse --abbrev-ref HEAD)
+        git -C "${SWAY_HOME_DIR}" bundle create "${WORK}/sway-home.bundle" "${ref}" 2>/dev/null
+        vm admin@127.0.0.1 'cat >/tmp/sway-home.bundle && chmod 644 /tmp/sway-home.bundle' <"${WORK}/sway-home.bundle"
+        src="/tmp/sway-home.bundle"
+    else
+        src=${SWAY_HOME_URL}
+        ref=${ref:-master}
+    fi
+    vm admin@127.0.0.1 sudo -n -iu user bash -s <<EOF
+set -euo pipefail
+git clone --quiet --branch '${ref}' '${src}' ~/git/vendor/enigmacurry/sway-home
+mkdir -p ~/.config/git
+printf '[user]\n\tname = setup test\n\temail = user@setuptest\n' >~/.config/git/config.local
+cd ~/git/vendor/enigmacurry/sway-home
+just hm-install
+EOF
+    # GPU drivers for programs from Nix: admin runs the user's setup command.
+    # shellcheck disable=SC2016 # expanded on the VM, as admin
+    vm admin@127.0.0.1 'sudo -n "$(sudo -n -iu user command -v non-nixos-gpu-setup)"'
+
+    phase "Check sway-home"
+    vm admin@127.0.0.1 bash -s <<'EOF'
+set -u
+fail=0
+check() { if eval "$2" >/dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
+check "firefox (from Nix) runs as user"  'sudo -n -iu user firefox --version'
+check "foot, waybar and rofi are user's" 'sudo -n -iu user sh -c "command -v foot && command -v waybar && command -v rofi"'
+check "/run/opengl-driver is linked"     '[ -e /run/opengl-driver ]'
+check "sway config is in place"          'sudo -n test -e ~user/.config/sway/config'
+sudo -n -iu user firefox --version
+exit $fail
+EOF
+
     phase "admin diff after the desktop"
     vm admin@127.0.0.1 admin diff 2>/dev/null \
         || die "admin diff found drift after the desktop: the host repo does not describe it"
@@ -264,6 +313,8 @@ main() {
     fi
     # The test stick has no WiFi, WireGuard or webhook on purpose.
     grep -v '^WARNING:' "${WORK}/provision.log" || true
+    # The desktop's Nix store alone is over 12 GiB.
+    [[ ${DESKTOP} == 1 ]] && DISK_SIZE=40G
     qemu-img create -q -f qcow2 "${WORK}/disk.qcow2" "${DISK_SIZE}"
     # Writable: the firmware keeps its variables there, and the source
     # may be read-only (every file in the Nix store is), so is a copy

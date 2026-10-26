@@ -1301,3 +1301,26 @@ user's environment comes from Nix with Home Manager and sway-home.
    (256 packages, 274 MiB) without a question. test-vm runs that apply
    under a 40-minute timeout with its output capped at 50 MB.
    The third run passed in 28m12s, `admin diff` after the desktop included.
+
+## Desktop, user half: sway-home with Home Manager (2026-10-26)
+
+ * firefox now comes from Nix (sway-home's `programs.firefox`), not
+   pacman: sway-home turns on Home Manager's `targets.genericLinux`
+   outside NixOS, which builds Mesa from nixpkgs for programs from Nix
+   and links it at /run/opengl-driver once root runs
+   `non-nixos-gpu-setup`. desktop/packages.txt drops firefox but keeps
+   noto-fonts: without firefox, something else still asks pacman for a
+   `ttf-font` (checked in an ALARM container). The seeded 90-ignore.sh
+   ignores what that setup writes: /etc/tmpfiles.d/non-nixos-gpu.conf
+   (a link into the Nix store) and NVIDIA's EGL files.
+ * `DESKTOP=1` goes on as `user`: clones sway-home (`SWAY_HOME_DIR`, a
+   local checkout sent as a git bundle, or `SWAY_HOME_URL` and
+   `SWAY_HOME_REF`), runs `just hm-install`, has admin run
+   `non-nixos-gpu-setup`, and checks firefox, foot, waybar and rofi
+   for `user`, /run/opengl-driver, the sway config, and `admin diff`.
+   The Home Manager closure is 4.3 GiB to download (12.6 GiB unpacked)
+   and 91 derivations to build, so the VM disk is 40 GB in this mode.
+ * Verifying sway-home found that `hm-install` could not work for
+   anyone: its git-prompt.sh input followed git's master branch, and
+   the narHash in its lock went stale when git changed the file.
+   sway-home's `arch` branch pins it to v2.56.0 (the locked content).
