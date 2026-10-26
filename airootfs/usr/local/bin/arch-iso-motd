@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Render this live system's login banner, neofetch style.
+#
+# One overlay builds every image, so the banner is rendered at boot
+# rather than baked in: it reads the /etc/os-release of whichever live
+# system actually booted. That file is the only thing that says which
+# image this is -- IMAGE_ID is "arch-iso" on x86_64 and "arch-rpi5" on
+# the Raspberry Pi 5 -- and the usb image carries both live systems on
+# one partition, so the question is a real one.
+#
+# Usage: arch-iso-motd           print the banner
+#        arch-iso-motd --write   write it to /etc/motd (what the service does)
+#
+# /etc/motd is what a login shows: sshd has PrintMotd off (Arch's
+# drop-in), and pam_motd prints the file for SSH and the console alike.
+set -uo pipefail
+
+MOTD=${MOTD:-/etc/motd}
+OS_RELEASE=${OS_RELEASE:-/etc/os-release}
+# Width the logo column is padded to, and the width of the info keys.
+LOGO_WIDTH=17
+KEY_WIDTH=9
+
+# os-release is shell syntax by definition, so source it for its values.
+# A missing one is not fatal: the fields fall back one by one below.
+# Everything defined after this point, so os-release's own keys (LOGO,
+# NAME, ...) cannot land on one of ours.
+# shellcheck source=/dev/null
+[[ -r ${OS_RELEASE} ]] && . "${OS_RELEASE}"
+
+# Arch's logo, ASCII only: this banner also shows on the console, whose
+# font has none of the block characters the fancier versions use.
+mapfile -t ART <<'EOF'
+      /\
+     /  \
+    /\   \
+   /      \
+  /   ,,   \
+ /   |  |   \
+/_-''    ''-_\
+EOF
+
+# The distro's own colour, from os-release (Arch's blue), with a
+# fallback for an os-release that doesn't set one.
+ESC=$'\033'
+COLOR="${ESC}[${ANSI_COLOR:-1;36}m"
+BOLD="${ESC}[1m"
+DIM="${ESC}[2m"
+RESET="${ESC}[0m"
+
+ROWS=()
+
+# One "Key   value" line of the info block. Only the key is padded, so
+# the colour escapes stay out of the field width.
+row() {
+    ROWS+=("$(printf '%s%-*s%s%s' "${COLOR}${BOLD}" "${KEY_WIDTH}" "$1" "${RESET}" "$2")")
+}
+
+# The machine: its device tree model on the Pi (and other boards),
+# DMI on PCs.
+host_model() {
+    local dmi=/sys/devices/virtual/dmi/id vendor name
+    if [[ -r /proc/device-tree/model ]]; then
+        tr -d '\0' </proc/device-tree/model
+        return
+    fi
+    [[ -r ${dmi}/product_name ]] || return
+    vendor=$(cat "${dmi}/sys_vendor" 2>/dev/null)
+    name=$(cat "${dmi}/product_name" 2>/dev/null)
+    # DMI strings are whatever the vendor left in the firmware.
+    echo "${vendor} ${name}" | sed -e 's/\(To Be Filled By O\.E\.M\.\|System manufacturer\|System Product Name\|Default string\)//g' \
+        -e 's/  */ /g' -e 's/^ *//' -e 's/ *$//'
+}
+
+# lscpu knows the core's name ("Cortex-A76"); /proc/cpuinfo on arm64
+# only says "ARMv8 Processor rev 1 (v8l)". On x86 either one works.
+cpu_model() {
+    local name
+    name=$(LC_ALL=C lscpu 2>/dev/null | awk -F': +' '/^Model name:/ {print $2; exit}')
+    [[ -z ${name} ]] && name=$(awk -F': +' '/^model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null)
+    echo "${name}"
+}
+
+info_block() {
+    local title model cpu cores mem docs
+    title=$(cat /proc/sys/kernel/hostname 2>/dev/null)
+    ROWS+=("${COLOR}${BOLD}${title}${RESET}")
+    ROWS+=("${COLOR}${title//?/-}${RESET}")
+
+    # The two fields that answer "which image is this?": the distro
+    # differs between the targets (Arch Linux ARM on the Pi) and so
+    # does the image name mkarchiso stamped in.
+    row OS "${PRETTY_NAME:-${NAME:-Linux}} ($(uname -m))"
+    [[ -n ${IMAGE_ID:-} ]] && row Image "${IMAGE_ID}${IMAGE_VERSION:+ ${IMAGE_VERSION}}"
+    row Kernel "$(uname -r)"
+    model=$(host_model)
+    [[ -n ${model} ]] && row Host "${model}"
+    cpu=$(cpu_model)
+    cores=$(nproc 2>/dev/null)
+    [[ -n ${cpu} || -n ${cores} ]] &&
+        row CPU "${cpu}${cores:+ ($((cores)) core$([[ ${cores} == 1 ]] || echo s))}"
+    mem=$(awk '/^MemTotal:/ {printf "%.1f GiB", $2/1048576}' /proc/meminfo 2>/dev/null)
+    [[ -n ${mem} ]] && row Memory "${mem}"
+    docs=${DOCUMENTATION_URL:-${HOME_URL:-}}
+    [[ -n ${docs} ]] && row Docs "${docs}"
+    return 0
+}
+
+# The logo on the left, the info block on the right, either one allowed
+# to be the taller of the two.
+banner() {
+    local i lines=${#ART[@]}
+    ((${#ROWS[@]} > lines)) && lines=${#ROWS[@]}
+    echo
+    for ((i = 0; i < lines; i++)); do
+        printf '%s%-*s%s%s\n' "${COLOR}" "${LOGO_WIDTH}" "${ART[i]:-}" "${RESET}" "${ROWS[i]:-}"
+    done
+    echo
+    printf '%sInstall Arch Linux with `archinstall`, or run `Installation_guide` for the guide.%s\n' "${DIM}" "${RESET}"
+    printf '%sConfiguration loaded from the stick: journalctl -u arch-iso-config%s\n' "${DIM}" "${RESET}"
+    echo
+}
+
+main() {
+    info_block
+    case ${1:-} in
+        --write)
+            # Replaced whole, so a login never reads a half-written file.
+            banner >"${MOTD}.new" && mv "${MOTD}.new" "${MOTD}"
+            ;;
+        '') banner ;;
+        *) echo "usage: $(basename "$0") [--write]" >&2; exit 2 ;;
+    esac
+}
+
+main "$@"

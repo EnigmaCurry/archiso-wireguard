@@ -1,0 +1,18 @@
+[Unit]
+Description=Render the live system's login banner (/etc/motd)
+Documentation=https://github.com/EnigmaCurry/boomstick
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target sysinit.target
+# Everything that shows the banner. Ordering before sysinit.target
+# already covers them; naming them keeps it true if one ever moves
+# earlier.
+Before=sshd.service systemd-user-sessions.service getty@tty1.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/arch-iso-motd --write
+
+[Install]
+WantedBy=sysinit.target

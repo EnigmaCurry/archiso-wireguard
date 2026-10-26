@@ -33,9 +33,12 @@ OVERLAY_PATHS=(
     etc/ssh/sshd_config.d
     usr/local/bin/arch-iso-config
     usr/local/bin/arch-iso-webhook
+    usr/local/bin/arch-iso-motd
     usr/local/bin/setup
     etc/systemd/system/arch-iso-config.service
     etc/systemd/system/sysinit.target.wants/arch-iso-config.service
+    etc/systemd/system/arch-iso-motd.service
+    etc/systemd/system/sysinit.target.wants/arch-iso-motd.service
     etc/systemd/system/arch-iso-webhook.service
     etc/systemd/system/multi-user.target.wants/arch-iso-webhook.service
     'etc/systemd/system/multi-user.target.wants/wg-quick@*'

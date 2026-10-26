@@ -1060,6 +1060,153 @@ logo built around the Arch "A" were both combined marks, so:
    (512x512): a USB stick with a rocket plume, WiFi, terminal, VPN
    shield and mini-PC icons, again without the Arch, WireGuard or
    Raspberry Pi marks.
+## A login banner that says which image booted (2026-10-25)
+
+The stock releng `/etc/motd` is the Arch installer's welcome text
+(install guide, `iwctl`, `mmcli`) and says nothing about which of these
+images you are on. That matters most on the usb stick, which carries
+both live systems: the only thing that distinguishes them at runtime is
+the `/etc/os-release` of whichever one booted --
+`PRETTY_NAME=Arch Linux ARM` and `IMAGE_ID=arch-rpi5` on the Pi,
+`Arch Linux` and `arch-iso` on x86_64 (mkarchiso stamps `IMAGE_ID` and
+`IMAGE_VERSION` in from `iso_name` and `iso_version`).
+
+So the banner is rendered at boot, not baked into the overlay:
+`airootfs/usr/local/bin/arch-iso-motd` reads `/etc/os-release` and
+prints a neofetch-style block -- Arch's ASCII logo in the distro's own
+`ANSI_COLOR`, then OS (with `uname -m`), image and version, kernel,
+machine, CPU and memory, and `DOCUMENTATION_URL`, which also differs per
+image (archlinuxarm.org/wiki vs wiki.archlinux.org). The installer
+pointer the stock motd existed for survives as a one-line footer, next
+to a `journalctl -u arch-iso-config` hint.
+
+`arch-iso-motd.service` runs it with `--write` in early boot (the same
+`DefaultDependencies=no`, `Before=sysinit.target` shape as
+`arch-iso-config.service`, plus an explicit `Before=sshd.service
+systemd-user-sessions.service getty@tty1.service`), and it replaces
+`/etc/motd` by rename so a login can never read a half-written file.
+That file is what a login actually prints: Arch's sshd drop-in sets
+`PrintMotd no`, and `pam_motd` in `system-login` prints `/etc/motd` for
+SSH and the console alike.
+
+Two details worth keeping:
+
+ * The ASCII logo is deliberate. The banner also shows on the Linux
+   console, whose font has none of the block characters the prettier
+   Arch logos are drawn with.
+ * os-release is sourced, which means its keys land in the script's own
+   namespace -- and one of them is `LOGO`. The first version held the
+   ASCII art in a `LOGO` array, and `LOGO=archlinux-logo` ate its first
+   line. Everything is now defined after the `.` line, and the art is
+   `ART`.
+
+Tested on the running Pi 500 (rpi5 image, aarch64): prints the block
+above, `--write` installs it atomically, and a fresh `ssh arch-iso`
+shows it. On an x86_64 host with `OS_RELEASE=` pointed at a stub copy of
+the Arch ISO's os-release: `Arch Linux (x86_64)` / `arch-iso
+2026.10.25` / `wiki.archlinux.org`, DMI for the machine name. With no
+os-release at all it still renders (falls back to `Linux`, a cyan logo,
+and drops the Image and Docs rows).
+
+Still untested: the banner on a real x86_64 boot of the image, and both
+halves of the usb stick.
+
+## The Pi image could not install a single ALARM package (2026-10-25)
+
+Found while writing the Arch install documentation, on a Pi 5 booted
+from `arch-usb-2026.10.25-x86_64+rpi5.img`: the rpi5 live system is
+unusable as an installer. Every package fails, the kernel included.
+
+```
+# pacman -Sw linux-rpi-16k
+:: Import PGP key 77193F152BDBE6A6, "Arch Linux ARM Build System ..."? [Y/n]
+error: linux-rpi-16k: signature from "Arch Linux ARM Build System
+       <builder@archlinuxarm.org>" is unknown trust
+error: failed to commit transaction (invalid or corrupted package (PGP signature))
+```
+
+And it cannot bootstrap out of it: `archlinuxarm-keyring` is itself
+signed by the key it carries, so installing the fix needs the fix.
+
+The image shipped Arch's keyring and nothing else:
+
+```
+# ls /usr/share/pacman/keyrings/
+archlinux-revoked  archlinux-trusted  archlinux.gpg
+# pacman -Q archlinuxarm-keyring
+error: package 'archlinuxarm-keyring' was not found
+```
+
+Every package in every Arch Linux ARM repo -- `core` and `extra`
+included, not just `alarm` -- is signed by their build system, and
+pacman.conf says `SigLevel = Required DatabaseOptional`. The key gets
+imported on demand but stays at `[ unknown]` trust, which `Required`
+rejects. The build never noticed because trust in that key was arranged
+in the *build container*: `install_archiso_alarm` populates
+`archlinuxarm` there on an arm64 host, and the cross-build path
+`--recv-keys`/`--lsign-key`s it (see
+[rpi5 and usb cross-built on an x86_64 host](#rpi5-and-usb-cross-built-on-an-x86_64-host-2026-10-24)).
+Nothing ever put the keyring inside the image.
+
+Fix: one line in `packages.rpi5`, `archlinuxarm-keyring`. That is
+sufficient on its own because releng's `pacman-init.service` runs
+
+```
+ExecStart=/usr/bin/pacman-key --init
+ExecStart=/usr/bin/pacman-key --populate
+```
+
+with no keyring argument, so it populates every keyring in
+`/usr/share/pacman/keyrings/` at boot. The package is in ALARM's `core`
+(`20240419-2`), so the "skip what ALARM doesn't have" filter in
+`rpi5_packages` keeps it. x86_64 was never affected: `base` pulls
+`archlinux-keyring` and its packages are Arch-signed.
+
+Verified without hardware, which turned out to be worth the trouble.
+`just build-rpi5`, then the image's own airootfs.sfs extracted from the
+FAT partition and run under qemu-user with
+`podman run --arch arm64 --rootfs`, doing exactly what
+`pacman-init.service` does:
+
+```
+# pacman-key --init && pacman-key --populate
+==> Appending keys from archlinux.gpg...
+==> Appending keys from archlinuxarm.gpg...
+# pacman-key --list-keys 68B3537F39A313B3E574D06777193F152BDBE6A6
+uid           [  full  ] Arch Linux ARM Build System <builder@archlinuxarm.org>
+# pacman -Sw linux-rpi-16k archlinuxarm-keyring base
+checking keyring...
+checking package integrity...                       # no signature error
+# pacman-key -v /tmp/cache/linux-rpi-16k-*.pkg.tar.xz.sig
+gpg: Good signature from "Arch Linux ARM Build System ..." [full]
+```
+
+`[ full ]` and not `[ unknown]` is the whole fix: it comes from the
+keyring in the image, with no `pacman-key --lsign-key` anywhere.
+
+Two traps in that container check, for next time:
+
+ * `unsquashfs` as a normal user warns about `security.capability`
+   xattrs it cannot restore and exits non-zero; `-no-xattrs` is needed,
+   and the extracted tree's root is mode 0555, so cleaning it up wants
+   a `chmod -R u+w` first.
+ * pacman 7 sandboxes downloads with Landlock, which is not available
+   in that container (`restricting filesystem access failed because
+   Landlock is not supported by the kernel`). `--disable-sandbox` is a
+   property of the test harness, not of the image; a real boot
+   sandboxes normally.
+
+Then confirmed on a real Pi 5, booted from the rebuilt stick: the fix
+holds outside the container, so the trust comes from
+`pacman-init.service` on an actual boot and not from anything the test
+harness arranged.
+
+One thing to know before installing from it: `pacstrap` needs more than
+archiso's 256M cowspace, so `mount -o remount,size=6G
+/run/archiso/cowspace` first. `pacstrap -K` is the variant worth using,
+since `-K` implies `-G` and so proves the target keyring is built from
+`/usr/share/pacman/keyrings/` rather than inheriting the live system's
+trust.
 
 ## setup: the install as a command (2026-10-26)
 
