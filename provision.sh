@@ -111,7 +111,7 @@ find_target() {
     [[ -n ${TARGET} ]] && return 0
     dev=$(blkid -L "${FAT_LABEL}" 2>/dev/null) || true
     [[ -n ${dev} ]] \
-        || die "no ${FAT_LABEL} filesystem: plug in a stick written from out/, or name a target (a mount point, a /dev node, or an image)"
+        || die "no ${FAT_LABEL} filesystem: plug in a stick written from out/, or name a target (a mount point or a /dev node)"
     command -v udisksctl >/dev/null \
         || die "${FAT_LABEL} is on ${dev} but not mounted, and udisksctl is not installed: mount it with -o uid=$(id -u),gid=$(id -g) and try again"
     udisksctl mount -b "${dev}" >/dev/null \
@@ -122,17 +122,24 @@ find_target() {
     echo "Mounted ${dev} at ${TARGET}"
 }
 
-# The installer, copied as bin/setup so that a fix to it reaches a
+# Live-system helpers, copied into bin/ so that a fix to one reaches a
 # stick with 'just provision' rather than a rebuild. boomstick-config
-# installs it over the copy baked into the image.
-SETUP=${ROOT}/airootfs/usr/local/bin/setup
+# installs everything in bin/ over the copies baked into the image.
+#
+# boomstick-config is deliberately not in this list. It is the thing
+# doing the installing, so a broken copy on a stick would disable
+# configuration on every later boot with no way back in. It stays
+# frozen in the image, where only a rebuild can change it.
+HELPER_DIR=${ROOT}/airootfs/usr/local/bin
+HELPERS=(setup boomstick-motd boomstick-webhook)
 
 # What gets copied: everything in secrets/, the README for whoever
-# plugs the stick into another machine, and the installer.
+# plugs the stick into another machine, and the helpers above.
 sources() {
     find "${SECRETS}" -mindepth 1 -not -name '*.example'
     echo "${TEMPLATES}/README.txt"
-    echo "${SETUP}"
+    local h
+    for h in "${HELPERS[@]}"; do echo "${HELPER_DIR}/${h}"; done
 }
 
 # Target is a mounted filesystem: plain cp. Accepts either the partition
@@ -144,7 +151,7 @@ provision_dir() {
     while IFS= read -r src; do
         rel=${src#"${SECRETS}"/}
         rel=${rel#"${TEMPLATES}"/}
-        [[ ${src} == "${SETUP}" ]] && rel=bin/setup
+        [[ ${src} == "${HELPER_DIR}"/* ]] && rel=bin/${src##*/}
         if [[ -d ${src} ]]; then
             mkdir -p "${dest}/${rel}"
         else
@@ -192,7 +199,8 @@ provision_mtools() {
         --volume "${ROOT}/provision.sh:/provision.sh:ro" \
         --volume "${SECRETS}:/secrets:ro" \
         --volume "${TEMPLATES}:/templates:ro" \
-        --volume "${SETUP}:/setup:ro" \
+        --volume "${HELPER_DIR}:/helpers:ro" \
+        --env BOOMSTICK_HELPERS="${HELPERS[*]}" \
         --env BOOMSTICK_IN_CONTAINER=1 \
         "$(host_image)" /provision.sh /target
 }
@@ -209,7 +217,7 @@ fat_offset() {
 
 # Container side. mtools writes into the FAT filesystem in place.
 provision_in_container() {
-    local offset img src rel dir
+    local offset img src rel dir h
     # The imported Arch Linux ARM image has no pacman keyring yet.
     if [[ $(uname -m) == aarch64 ]]; then
         { pacman-key --init && pacman-key --populate archlinuxarm; } >/dev/null 2>&1
@@ -226,7 +234,7 @@ provision_in_container() {
     while IFS= read -r src; do
         rel=${src#/secrets/}
         rel=${rel#/templates/}
-        [[ ${src} == /setup ]] && rel=bin/setup
+        [[ ${src} == /helpers/* ]] && rel=bin/${src##*/}
         if [[ -d ${src} ]]; then
             mmd -i "${img}" "::/${CONFIG_DIR}/${rel}" 2>/dev/null || true
             continue
@@ -239,7 +247,13 @@ provision_in_container() {
         fi
         mcopy -o -i "${img}" "${src}" "::/${CONFIG_DIR}/${rel}"
         echo "  ${CONFIG_DIR}/${rel}"
-    done < <( { find /secrets -mindepth 1 -not -name '*.example'; echo /templates/README.txt; echo /setup; } | sort)
+    done < <( {
+        find /secrets -mindepth 1 -not -name '*.example'
+        echo /templates/README.txt
+        # BOOMSTICK_HELPERS is a space-separated list from the host side.
+        # shellcheck disable=SC2086 # word splitting is the point
+        for h in ${BOOMSTICK_HELPERS:-setup}; do echo "/helpers/${h}"; done
+    } | sort)
     sync
     echo
     echo "Wrote ${CONFIG_DIR}/ to the target's FAT partition."

@@ -163,13 +163,31 @@ save_host_keys() {
     fi
 }
 
-# A newer installer from the config partition ('just provision' copies
-# it there), over the one baked into the image.
-install_setup() {
-    if [[ -f ${SRC}/bin/setup ]]; then
-        install -m 755 "${SRC}/bin/setup" /usr/local/bin/setup \
-            && msg "setup: installed from ${CONFIG_DIR}/bin/setup"
-    fi
+# Newer helpers from the config partition ('just provision' copies setup
+# there), over the ones baked into the image. Anything in bin/ is fair
+# game, not just setup: an image's own scripts are frozen at build time,
+# and this is the one way a fix reaches a stick without a rebuild.
+#
+# No new trust is granted by this. The same directory already supplies
+# root's authorized_keys and, in setup, a program that repartitions
+# disks; whoever can write to the stick owns the live system either way.
+install_bin() {
+    local src name installed=()
+    [[ -d ${SRC}/bin ]] || return 0
+    for src in "${SRC}"/bin/*; do
+        [[ -f ${src} ]] || continue
+        name=$(basename "${src}")
+        # Only over a path the image actually owns, so a stray file
+        # cannot drop a new command onto the live system.
+        if [[ ! -e /usr/local/bin/${name} ]]; then
+            warn "${CONFIG_DIR}/bin/${name}: no /usr/local/bin/${name} to replace, skipped"
+            continue
+        fi
+        install -m 755 "${src}" "/usr/local/bin/${name}" && installed+=("${name}")
+    done
+    ((${#installed[@]})) \
+        && msg "bin: installed from ${CONFIG_DIR}/bin/: ${installed[*]}"
+    return 0
 }
 
 # Host keys from the config partition, generating and saving any that
@@ -212,7 +230,7 @@ main() {
     install_wireguard
     install_authorized_keys
     install_webhook
-    install_setup
+    install_bin
     install_host_keys
     if ((FALLBACK_MOUNTED)); then
         umount "${FALLBACK_MNT}" || warn "could not unmount ${FALLBACK_MNT}"
