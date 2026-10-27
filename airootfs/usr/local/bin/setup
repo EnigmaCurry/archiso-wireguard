@@ -596,6 +596,34 @@ usage() { sed -n '2,/^set -euo/p' "$0" | sed -e '/^set -euo/d' -e 's/^# \{0,1\}/
 # The aconfmgr commands 99-unsorted.sh holds, without its comments.
 drift() { grep -vE '^\s*(#|$)' "$1" 2>/dev/null || true; }
 
+# Every CopyFile line needs its copy under aconfmgr/files/. Removing one
+# without the other is easy to do while sorting 99-unsorted.sh by hand,
+# which is the normal way to use this, and aconfmgr's answer is to die
+# mid-apply with a stack trace that never mentions the file:
+#
+#   cp: cannot stat '.../files//etc/wireguard/wg0.conf'
+#   :::: Fatal error! Stack trace:
+#
+# So say it first, and say what to do about it.
+check_copied_files() {
+    local line path missing=()
+    while IFS= read -r line; do
+        path=${line#*CopyFile}
+        path=${path#"${path%%[![:space:]]*}"}   # drop leading space
+        path=${path%%[[:space:]]*}              # first word only
+        path=${path//\'/}
+        path=${path//\"/}
+        [[ ${path} == /* ]] || continue
+        [[ -e ${CONFIG}/files${path} ]] || missing+=("${path}")
+    done < <(grep -rhE '^[[:space:]]*CopyFile[[:space:]]' "${CONFIG}"/*.sh 2>/dev/null || true)
+    ((${#missing[@]})) || return 0
+    echo "ERROR: described by a CopyFile line, but missing under aconfmgr/files:" >&2
+    printf '         %s\n' "${missing[@]}" >&2
+    echo "Either put the file back, or delete the CopyFile line that names it" >&2
+    echo "(grep -rn CopyFile ${CONFIG#"${HOME}"/}). aconfmgr would stop mid-apply." >&2
+    return 1
+}
+
 # git, in the host repo, from anywhere. The repo is the record of this
 # machine, and reaching for it should not mean remembering where it
 # lives or cd-ing there first. git's own exit status is passed back, so
@@ -635,6 +663,8 @@ cmd_save() {
 
 cmd_apply() {
     local pending
+    check_copied_files || die "nothing applied"
+
     pending=$(mktemp)
     # shellcheck disable=SC2064 # expand now: pending is local
     trap "rm -f '${pending}'" EXIT

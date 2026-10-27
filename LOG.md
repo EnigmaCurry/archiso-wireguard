@@ -2129,3 +2129,29 @@ Placed before the `authorized_keys` block in `create_accounts`, which
 returns early on a repo with no keys: an identity is wanted whether or
 not anyone can SSH in. `just test-vm` makes an empty commit as admin
 and rolls it back: 18 checks.
+
+## A dangling CopyFile should not be a stack trace (2026-10-26)
+
+After clearing a recorded WireGuard key out of a host repo by hand --
+deleting `aconfmgr/files/etc/wireguard/wg0.conf` but leaving the
+`CopyFile` line in `99-unsorted.sh` -- `admin apply` died with:
+
+    cp: cannot stat '/home/admin/arch/aconfmgr/files//etc/wireguard/wg0.conf'
+    :::: Fatal error! Stack trace:
+    ::::: /usr/lib/aconfmgr/helpers.bash:135 [CopyFileTo]
+    ...
+
+Eight lines of aconfmgr internals, no mention of what to do. And this is
+not an unusual mistake: sorting `99-unsorted.sh` by hand is the normal
+way to use `admin save`, and the two halves of a `CopyFile` -- the line
+and the file -- are easy to separate.
+
+`admin apply` checks first now, and says it plainly:
+
+    ERROR: described by a CopyFile line, but missing under aconfmgr/files:
+             /etc/wireguard/wg0.conf
+    Either put the file back, or delete the CopyFile line that names it
+    (grep -rn CopyFile arch/aconfmgr). aconfmgr would stop mid-apply.
+
+`just test-vm` appends a `CopyFile` for a file that does not exist,
+checks the message, and removes it again: 19 checks.

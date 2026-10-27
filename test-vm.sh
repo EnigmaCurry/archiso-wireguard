@@ -494,6 +494,13 @@ check "admin git works anywhere"  'cd /tmp && admin git log --oneline -1'
 check "admin can commit"          'cd ~/arch && git -c commit.gpgsign=false commit --allow-empty -q -m probe && git reset --hard HEAD~1'
 # A WireGuard key must never be recorded into the repo: the seeded
 # ignore rule has to be there whether or not setup wireguard ever ran.
+# A CopyFile with no file under aconfmgr/files/ must be reported, not
+# left for aconfmgr to die on mid-apply with a stack trace. This is the
+# real failure: a file removed from files/ while its line stayed behind.
+probe=~/arch/aconfmgr/99-unsorted.sh
+echo "CopyFile /etc/probe-dangling" >>"$probe"
+check "dangling CopyFile is caught" 'admin apply 2>&1 | grep -q "missing under aconfmgr/files"'
+sed -i "/probe-dangling/d" "$probe"
 check "/etc/wireguard is ignored"  'grep -q "IgnorePath .[/]etc/wireguard" ~/arch/aconfmgr/90-ignore.sh'
 check "snapper has a root config" 'sudo -n snapper --no-dbus -c root list'
 systemctl --failed --no-legend
