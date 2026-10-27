@@ -489,6 +489,9 @@ check "admin and aconfmgr are installed" 'command -v admin && aconfmgr --help'
 check "less is installed"         'command -v less'
 # admin git reaches the host repo from wherever you are.
 check "admin git works anywhere"  'cd /tmp && admin git log --oneline -1'
+# git refuses to commit without an identity, and admin is expected to
+# commit to the host repo.
+check "admin can commit"          'cd ~/arch && git -c commit.gpgsign=false commit --allow-empty -q -m probe && git reset --hard HEAD~1'
 # A WireGuard key must never be recorded into the repo: the seeded
 # ignore rule has to be there whether or not setup wireguard ever ran.
 check "/etc/wireguard is ignored"  'grep -q "IgnorePath .[/]etc/wireguard" ~/arch/aconfmgr/90-ignore.sh'

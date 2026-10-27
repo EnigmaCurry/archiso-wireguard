@@ -2104,3 +2104,28 @@ reading the record of a machine does not mean remembering where it
 lives: `admin git log`, `admin git commit -am "..."`, `admin git push`.
 git's exit status is passed back, so `admin git diff --quiet` works as
 a test.
+
+## admin gets a git identity (2026-10-26)
+
+Reported from pi500, on the first real commit to the host repo:
+
+    git -C ~/arch commit -m "Desktop: sway, greetd, Nix"
+    Author identity unknown
+    *** Please tell me who you are.
+
+setup's own commits were never affected -- `commit_repo` passes
+`user.name=setup` and `user.email=root@<hostname>` explicitly, which is
+also what keeps its commits distinguishable from the administrator's --
+so nothing had configured git for the human using the account.
+
+`create_accounts` writes `~admin/.gitconfig` now, naming it
+`admin@<hostname>`. It is a machine account, so a machine identity is
+the honest default, and it is seeded once rather than enforced: an
+identity set later is left alone. The daily user is deliberately not
+given one -- that is a person, and sway-home's `hm-install` asks them
+for their own name and address.
+
+Placed before the `authorized_keys` block in `create_accounts`, which
+returns early on a repo with no keys: an identity is wanted whether or
+not anyone can SSH in. `just test-vm` makes an empty commit as admin
+and rolls it back: 18 checks.

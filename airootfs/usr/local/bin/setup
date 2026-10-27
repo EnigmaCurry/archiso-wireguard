@@ -1375,6 +1375,37 @@ install_authorized_keys() {
     in_target chown "${u}:${u}" "/home/${u}/.ssh/authorized_keys"
 }
 
+# git refuses to commit without an identity, and the host repo is a git
+# repository the administrator is expected to commit to -- "Author
+# identity unknown" on the first 'git commit' in ~/arch is a silly way
+# to meet your new machine. ${ADMIN} is a machine account, so it gets a
+# machine identity.
+#
+# Seeded once: a real identity set later is not overwritten. setup's own
+# commits are unaffected either way -- commit_repo passes
+# user.name=setup explicitly, so its commits stay distinguishable from
+# the administrator's.
+#
+# The daily user is deliberately left alone: that is a person, and
+# sway-home's hm-install asks them for a name and address of their own.
+git_identity() {
+    local cfg=${TARGET}/home/${ADMIN}/.gitconfig
+    if [[ -e ${cfg} ]]; then
+        msg "  ${ADMIN}: .gitconfig already there, left alone"
+        return 0
+    fi
+    cat >"${cfg}" <<GITCONFIG
+# Written by setup. A machine identity for the administrator account,
+# so that commits to the host repo have an author. Change it freely.
+[user]
+	name = ${ADMIN}
+	email = ${ADMIN}@${HOSTNAME}
+GITCONFIG
+    chmod 0644 "${cfg}"
+    in_target chown "${ADMIN}:${ADMIN}" "/home/${ADMIN}/.gitconfig"
+    msg "  ${ADMIN}: git identity ${ADMIN}@${HOSTNAME}"
+}
+
 create_accounts() {
     local daily_keys=${TARGET}/home/${DAILY}/.ssh/authorized_keys
     ask_target id "${ADMIN}" >/dev/null 2>&1 \
@@ -1382,6 +1413,9 @@ create_accounts() {
     ask_target id "${DAILY}" >/dev/null 2>&1 \
         || in_target useradd -m -c "Daily driver" "${DAILY}"
     in_target visudo -c
+    # Before the keys, which may return early: an identity is wanted
+    # whether or not anyone can SSH in.
+    git_identity
     if [[ ! -s ${HOST_REPO}/authorized_keys ]]; then
         warn "no authorized_keys in ${HOST_REPO}: ${ADMIN} will not be able to log in over SSH"
         return 0
