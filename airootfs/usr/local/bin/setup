@@ -9,7 +9,11 @@
 #
 # Usage: setup [--yes] [COMMAND [ARGS]]
 #   (no command)       show which steps are done and offer the next one
-#   host [--from SRC]  describe the machine: write the host repo, /root/arch
+#   host [--from SRC]  describe the machine: write the host repo, /root/arch.
+#                      SRC is an existing host repo to restore from (a git
+#                      URL, a local repository or a git bundle), a
+#                      host.env file, or the name of one on the config
+#                      partition
 #   disk [--mount]     partition, (encrypt,) format, mount under /mnt, swap
 #   install [--passwords FILE]
 #                      install the base system, make it boot, network,
@@ -72,6 +76,8 @@ CONFIRM_WIPE=
 PASSWORDS_FILE=
 # Whether this stick shipped Arch Linux ARM's keyring (see install_packages).
 ALARM_SHIPPED=1
+# Whether 'setup host --from' cloned a host repo: a restore.
+RESTORED=0
 
 # --- output -----------------------------------------------------------------
 
@@ -891,18 +897,44 @@ copy_named_host() {
     msg "Copied ${CONFIG_DIR}/hosts/${name}.env to ${HOST_FILE}"
 }
 
-# Fill HOST_REPO from an existing source: a git URL, a host.env path, or
-# the name of a host file on the config partition.
+# Credentials typed into an http(s) URL (https://TOKEN@host/...), cut
+# out: the URL is echoed, and kept in the clone's .git/config, which
+# moves into the installed system with the repo.
+strip_url_credentials() {
+    if [[ $1 =~ ^(https?://)[^/@]+@(.*)$ ]]; then
+        echo "${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+    else
+        echo "$1"
+    fi
+}
+
+# Fill HOST_REPO from an existing source: a git repository (a URL, a
+# local repository, or a bundle file), a host.env path, or the name of
+# a host file on the config partition. A repository is cloned whole:
+# that is a restore, and sets RESTORED.
 host_from() {
-    local src=$1
+    local src=$1 shown
     if [[ -e ${HOST_REPO} && -n $(ls -A "${HOST_REPO}" 2>/dev/null) ]]; then
         die "${HOST_REPO} already exists: move it aside to start over from ${src}"
     fi
+    if [[ -d ${src} || ${src} == *://* || ${src} == *@*:* || ${src} == *.git || ${src} == *.bundle ]]; then
+        command -v git >/dev/null || die "git is not installed on this live system"
+        shown=$(strip_url_credentials "${src}")
+        printf '+ git clone %s %s\n' "${shown}" "${HOST_REPO}" >&2
+        git clone --quiet "${src}" "${HOST_REPO}"
+        [[ ${shown} == "${src}" ]] || git -C "${HOST_REPO}" remote set-url origin "${shown}"
+        [[ -f ${HOST_FILE} ]] || die "${shown} has no host.env: it is not a host repo"
+        # The repo brings the log of the install it records: this run's
+        # goes on after it, rather than replacing it at exit (sync_log).
+        if [[ -s ${HOST_REPO}/${LOG_REL} && -f ${LOG_STAGE} ]]; then
+            cat "${HOST_REPO}/${LOG_REL}" "${LOG_STAGE}" >"${LOG_STAGE}.restore"
+            cat "${LOG_STAGE}.restore" >"${LOG_STAGE}"
+            rm -f "${LOG_STAGE}.restore"
+        fi
+        RESTORED=1
+        return
+    fi
     case ${src} in
-        *://*|*@*:*|*.git)
-            command -v git >/dev/null || die "git is not installed on this live system"
-            run git clone "${src}" "${HOST_REPO}"
-            ;;
         */*|*.env)
             [[ -f ${src} ]] || die "no such file: ${src}"
             mkdir -p "${HOST_REPO}"
@@ -1007,8 +1039,22 @@ cmd_host() {
         [[ ${ADMIN_NOPASSWD} == y* ]] && ADMIN_NOPASSWD=yes || ADMIN_NOPASSWD=no
     fi
 
-    write_host_file
-    seed_repo
+    if ((RESTORED)); then
+        # The repo is the user's, as committed: only the disk may change,
+        # in place, so that anything else in host.env stays as it was.
+        if grep -q '^DISK=' "${HOST_FILE}"; then
+            sed -i "s|^DISK=.*|DISK=${DISK}|" "${HOST_FILE}"
+        else
+            echo "DISK=${DISK}" >>"${HOST_FILE}"
+        fi
+        # A repo setup wrote is complete: what it lacks of what setup
+        # would seed, its owner deleted on purpose. One written by hand
+        # (a host.env and a package list, say) is seeded as usual.
+        [[ -d ${HOST_REPO}/aconfmgr ]] || seed_repo
+    else
+        write_host_file
+        seed_repo
+    fi
     if [[ -z ${from} ]]; then
         prompt extra "Extra packages to install (blank for none)" ""
         if [[ -n ${extra} ]]; then
@@ -1019,6 +1065,10 @@ cmd_host() {
     commit_repo "${HOST_REPO}" "setup host: ${HOSTNAME}"
     echo
     msg "Host repo: ${HOST_REPO}. Next: setup disk"
+    if ((RESTORED)); then
+        msg "Restoring ${HOSTNAME} from its host repo: once it has rebooted, log in as"
+        msg "${ADMIN} and run 'admin apply' for what only ${HOST_REPO##*/}/aconfmgr/ describes."
+    fi
 }
 
 # --- disk -------------------------------------------------------------------
@@ -1305,6 +1355,28 @@ EOF
     msg "  wrote /boot/loader/loader.conf and entries/arch.conf: $(kernel_root)"
 }
 
+# True if the target has a unit file for UNIT (or for its template).
+unit_present() {
+    local file=$1 dir
+    [[ ${file} == *.* ]] || file+=.service
+    file=${file/@*./@.}
+    for dir in /usr/lib/systemd/system /etc/systemd/system; do
+        [[ -e ${TARGET}${dir}/${file} ]] && return 0
+    done
+    return 1
+}
+
+# The units in units.txt whose package the install has not put in: a
+# restored repo may name units from packages that only aconfmgr/
+# describes, which 'admin apply' installs, and then enables them.
+pending_units() {
+    local unit
+    while read -r unit; do
+        [[ -n ${unit} ]] && ! unit_present "${unit}" && echo "${unit}"
+    done < <(repo_units)
+    return 0
+}
+
 # The host repo, applied to the target: files under etc/, then units.
 # git keeps no file modes, so modes are set here, by place.
 apply_repo() {
@@ -1329,7 +1401,12 @@ apply_repo() {
         run rm -f "${TARGET}/etc/sudoers.d/10-admin"
     fi
     while read -r unit; do
-        [[ -n ${unit} ]] && in_target systemctl enable "${unit}"
+        [[ -n ${unit} ]] || continue
+        if unit_present "${unit}"; then
+            in_target systemctl enable "${unit}"
+        else
+            warn "${unit}: no such unit in the target yet; 'admin apply' enables it once it installs its package"
+        fi
     done < <(repo_units)
 }
 
@@ -1671,7 +1748,7 @@ cmd_wireguard() {
 
 # Print one line per check; return non-zero if any failed.
 cmd_check() {
-    local failed=0 n dups units u state states=() keys dkeys out pw
+    local failed=0 n dups units u state states=() keys dkeys out pw pending
     load_host
     section "Check"
     if ! layout_mounted; then
@@ -1748,9 +1825,10 @@ cmd_check() {
     fi
 
     units=()
-    while read -r u; do [[ -n ${u} ]] && units+=("${u}"); done < <(repo_units)
+    while read -r u; do [[ -n ${u} ]] && unit_present "${u}" && units+=("${u}"); done < <(repo_units)
+    pending=$(pending_units | tr '\n' ' ')
     if ((${#units[@]})) && ask_target systemctl is-enabled "${units[@]}" >/dev/null 2>&1; then
-        ok units "${units[*]} enabled"
+        ok units "${units[*]} enabled${pending:+; after 'admin apply': ${pending% }}"
     else
         bad units "not all enabled: $(ask_target systemctl is-enabled "${units[@]}" 2>&1 | tr '\n' ' ')"; failed=1
     fi
@@ -1775,6 +1853,15 @@ cmd_check() {
     else
         bad admin "aconfmgr, /usr/local/bin/admin or snapper's root config is missing"; failed=1
     fi
+
+    # A tunnel in units.txt whose key is not on the target: a restored
+    # repo names the unit, but the key was never in it.
+    for u in $(repo_units | sed -n 's/^wg-quick@//p'); do
+        if [[ ! -f ${TARGET}/etc/wireguard/${u}.conf ]]; then
+            bad wireguard "units.txt enables wg-quick@${u}, but there is no /etc/wireguard/${u}.conf: run 'setup wireguard', or take it out of units.txt"
+            failed=1
+        fi
+    done
 
     n=$(find "${TARGET}/var/lib/iwd" -maxdepth 1 -type f 2>/dev/null | wc -l)
     if ((n > 0)); then

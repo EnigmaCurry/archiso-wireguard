@@ -581,8 +581,10 @@ setup reboot    # check again, unmount and reboot (refuses if a check fails)
 next one. Every step reads `/root/arch/host.env` rather than shell
 variables, is safe to run again, and echoes each command it runs in
 the book's words. Erasing the disk asks you to type the hostname.
-`setup host --from <git URL | file | name>` starts from an existing
-host repo, or from `boomstick/hosts/<name>.env` on the stick;
+`setup host --from <git URL | repo path | bundle | file | name>`
+restores from an existing host repo (keeping it as committed, except
+for re-picking a disk that is not on this machine), or starts from a
+`host.env` file or `boomstick/hosts/<name>.env` on the stick;
 `setup disk --mount` mounts an existing layout without formatting, for
 rescue or to finish a half-done install.
 

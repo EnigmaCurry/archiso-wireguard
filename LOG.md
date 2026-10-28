@@ -1772,7 +1772,7 @@ final check.
 Each invocation appends a header, because `setup host`, `setup disk` and
 `setup install` are separate runs:
 
-    ================================================================
+    =========================================================
     setup install --passwords /root/test-passwords
       when:    2026-10-26 19:42:35 UTC
       clock:   synchronised with NTP
@@ -2057,3 +2057,58 @@ surprise. `setup check` reports both counts and still only requires
 `admin` to have one.
 
 `just test-vm` compares the two files: 14 checks, 1m45s.
+=======
+## Restore from the host repo (2026-10-28)
+
+The book's Restore chapter: the machine is lost, and only its pushed
+host repo survives.
+
+ * `setup host --from` clones any git repository: a URL, a local
+   repository (a directory), or a git bundle (`*.bundle`). A bundle
+   path used to fall through to the host.env case. A token typed into
+   an `https://` URL is cut out of the echoed command and of the
+   clone's origin, which would otherwise move into the installed
+   system with the repo.
+ * A cloned repo is a restore, and is kept as committed. `setup host`
+   no longer rewrites host.env from its own variables (which dropped
+   anything else in it): only the `DISK` line changes, in place, when
+   the repo's disk is not on this machine. It no longer seeds a repo
+   that has `aconfmgr/`, so a seeded file the owner deleted stays
+   deleted. The disk change is committed as "setup host: NAME".
+   `10-base.sh` is rewritten by install, as before: the same on the
+   same hardware, so no commit; on other hardware the change is
+   committed.
+ * The repo brings `logs/000_SETUP.txt`, the log of the install it
+   records. The new run's log is staged in /run and copied over the
+   repo's at exit, which would have replaced the old log with the
+   restore's alone; `host_from` now puts the repo's log in front of
+   the staged one, so the restore's install continues it.
+ * A tunnel from `setup wireguard` is in the repo as a package, a
+   unit and an IgnorePath, but its key is not, so a restored machine
+   would boot with a failing `wg-quick@wg0`. `setup check` now fails
+   when units.txt enables `wg-quick@NAME` and the target has no
+   `/etc/wireguard/NAME.conf`, and says to run `setup wireguard` (or
+   take the unit out).
+ * A unit in units.txt whose package the install did not put in (one
+   that only `aconfmgr/` names, possible in a restored repo) used to
+   stop the install at `systemctl enable`. Now `setup install` warns
+   and skips it, and `setup check` passes it, listing it as waiting
+   for `admin apply` (whose second pass enables units from packages it
+   installed).
+ * `RESTORE=1 just test-vm`: after the install (and the desktop, with
+   `DESKTOP=1`), installs `tree` and writes `/etc/restore-test.conf`,
+   runs `admin save`, sorts `tree` into packages.txt and leaves the
+   file in aconfmgr's terms (`aconfmgr/50-local.sh`, `files/`), checks
+   `admin diff`, commits, and takes the repo as a git bundle. Then a
+   new blank disk with another serial and fresh firmware variables,
+   `setup host --from` the bundle (which picks the disk again), disk,
+   install, reboot. It checks the repo's history, the new `DISK`, and
+   `tree`, that the file is absent until `admin apply`, present after
+   it, and `admin diff`. With `DESKTOP=1`, the restored machine must
+   greet, and sway-home is installed again and checked. It also
+   combines with `ENCRYPT=yes`: the restored repo says LUKS, and the
+   second install types the passphrase as the first does. It checks
+   that the install log has both installs in it.
+   test-vm.sh's install, check and desktop steps are now functions, so
+   both installs run the same code. Static checks only (bash -n,
+   shellcheck): not run yet.

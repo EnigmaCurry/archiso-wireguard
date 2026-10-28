@@ -28,6 +28,19 @@
 #      and that 'admin diff' still finds no drift. Logging in to sway is
 #      not tested. The Nix store this fills is over 12 GiB, so the disk
 #      is 40 GB in this mode, and under TCG it takes hours.
+#   7. With RESTORE=1 (the book's Restore chapter): installs a package
+#      and writes a file under /etc, records them with 'admin save',
+#      sorts them (the package into packages.txt, the file left in
+#      aconfmgr's terms as aconfmgr/50-local.sh) and commits. Exports
+#      the host repo as a git bundle, then erases the machine: a new
+#      blank disk with another serial, and fresh firmware variables.
+#      Installs again from the stick with 'setup host --from' the
+#      bundle, which has to pick the disk again, boots it, checks that
+#      the repo's history, its install log and the package came back,
+#      runs 'admin apply', checks that the file came back, and that
+#      'admin diff' finds no drift. With DESKTOP=1 as well, the restored
+#      machine must greet with greetd, and sway-home is installed for
+#      the daily user again (/home is not in the repo) and checked.
 #
 # Needs qemu (brew install qemu, or pacman -S qemu-full), podman (as for
 # the build, for provisioning) and ssh. On Apple Silicon the VM runs
@@ -43,6 +56,8 @@
 #                    way the test machine differs from a real install.
 #   KEEP=1           leave the VM's disks in test/ afterwards
 #   DESKTOP=1        go on to install the desktop (step 6)
+#   RESTORE=1        then erase the machine and restore it from its
+#                    host repo (step 7)
 #   SWAY_HOME_DIR    a sway-home checkout to install in step 6, as a git
 #                    bundle of its SWAY_HOME_REF (default HEAD); without
 #                    it, SWAY_HOME_URL (GitHub) at SWAY_HOME_REF (master)
@@ -58,6 +73,7 @@ SSH_PORT=${SSH_PORT:-2222}
 ENCRYPT=${ENCRYPT:-no}
 KEEP=${KEEP:-0}
 DESKTOP=${DESKTOP:-0}
+RESTORE=${RESTORE:-0}
 SWAY_HOME_DIR=${SWAY_HOME_DIR:-}
 SWAY_HOME_URL=${SWAY_HOME_URL:-https://github.com/EnigmaCurry/sway-home}
 SWAY_HOME_REF=${SWAY_HOME_REF:-}
@@ -277,6 +293,117 @@ type_passphrase() {
 
 # --- the test -----------------------------------------------------------------
 
+# Boot the stick and install with setup, every prompt answered, up to
+# and including the reboot. With FROM=bundle, setup host restores the
+# host repo from ${WORK}/arch.bundle instead of the test's answers.
+install_from_stick() {
+    local from=${1:-answers}
+    phase "Boot the stick"
+    boot_vm "${WORK}/serial-live-${from}.log" \
+        -drive if=none,id=stick,format=raw,file="${WORK}/stick.img" \
+        -device qemu-xhci -device usb-storage,drive=stick,bootindex=1
+    wait_ssh root "${WORK}/serial-live-${from}.log"
+
+    phase "Copy this tree's setup and the test answers"
+    vm root@127.0.0.1 'cat >/usr/local/bin/setup && chmod 755 /usr/local/bin/setup' <"${ROOT}/airootfs/usr/local/bin/setup"
+    vm root@127.0.0.1 'umask 077 && cat >/root/test-passwords' <"${WORK}/passwords"
+
+    if [[ ${from} == bundle ]]; then
+        vm root@127.0.0.1 'cat >/root/arch.bundle' <"${WORK}/arch.bundle"
+        phase "setup host --from the host repo (a git bundle)"
+        # The repo's disk is not on this machine: setup asks which disk,
+        # and the only one it offers (the default, 1) is right.
+        printf '\n' | vm root@127.0.0.1 setup host --from /root/arch.bundle
+    else
+        vm root@127.0.0.1 'cat >/root/test-host.env' <"${WORK}/host.env"
+        phase "setup host"
+        vm root@127.0.0.1 setup host --from /root/test-host.env
+    fi
+
+    phase "setup disk"
+    if [[ ${ENCRYPT} == yes ]]; then
+        # For LUKS, cryptsetup reads the passphrase from stdin up to the
+        # first newline whenever stdin is not a terminal -- so send it on
+        # a pipe and do NOT ask ssh for a pty (-tt). With a pty it prompts
+        # on the terminal instead and flushes what is already buffered
+        # there, which is what used to hang this step forever.
+        # Three lines covers both cryptsetup calls (luksFormat, then open)
+        # whether or not luksFormat asks a second time to verify; any line
+        # left over is simply never read.
+        printf '%s\n%s\n%s\n' "${PASSWORD}" "${PASSWORD}" "${PASSWORD}" \
+            | vm root@127.0.0.1 setup --yes disk --confirm-wipe "${HOST}"
+    else
+        vm root@127.0.0.1 setup --yes disk --confirm-wipe "${HOST}"
+    fi
+
+    phase "setup install"
+    vm root@127.0.0.1 setup --yes install --passwords /root/test-passwords
+
+    if [[ ${ENCRYPT} == yes ]]; then
+        # systemd-cryptsetup asks on /dev/console, which with no console=
+        # is the virtual console -- which QEMU is not showing and this
+        # test cannot type into. Point it at the serial line instead.
+        phase "Point the installed console at ttyS0 (ENCRYPT=yes only)"
+        vm root@127.0.0.1 \
+            "sed -i '/^options/ s/\$/ console=ttyS0,115200/' /mnt/boot/loader/entries/arch.conf \
+             && grep ^options /mnt/boot/loader/entries/arch.conf"
+    fi
+
+    phase "setup reboot"
+    vm root@127.0.0.1 setup --yes reboot || true
+    wait_exit
+}
+
+# A blank disk (with serial DISK_SERIAL) and fresh firmware variables:
+# a machine nothing has been installed on.
+blank_machine() {
+    qemu-img create -q -f qcow2 "${WORK}/disk.qcow2" "${DISK_SIZE}"
+    # Writable: the firmware keeps its variables there, and the source
+    # may be read-only (every file in the Nix store is), so is a copy
+    # kept by an earlier KEEP=1 run.
+    cp -f "${FW_VARS}" "${WORK}/vars.fd"
+    chmod u+w "${WORK}/vars.fd"
+}
+
+# Step 4: the installed system, as setup left it.
+check_installed() {
+    vm admin@127.0.0.1 "DAILY=${DAILY} bash -s" <<'EOF'
+set -u
+fail=0
+check() { if eval "$2" >/dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
+check "hostname is setuptest"     '[ "$(cat /etc/hostname)" = setuptest ]'
+check "/ is the @ subvolume"      'findmnt -no SOURCE / | grep -q "\[/@\]$"'
+check "/home is @home"            'findmnt -no SOURCE /home | grep -q "\[/@home\]$"'
+check "swap is on"                'swapon --show=NAME --noheadings | grep -qx /swap/swapfile'
+check "admin has passwordless sudo" 'sudo -n true'
+check "root is locked"            'sudo -n passwd -S root | awk "{exit !(\$2 == \"L\")}"'
+# The daily user starts with the administrator's keys, so you can log
+# in as yourself on the first boot.
+check "${DAILY} has admin's keys"  'sudo -n cmp -s ~admin/.ssh/authorized_keys "$(getent passwd "${DAILY}" | cut -d: -f6)/.ssh/authorized_keys"'
+check "${DAILY} exists, not in wheel" 'id "${DAILY}" && ! id -nG "${DAILY}" | grep -qw wheel'
+check "root cannot ssh"           'sudo -n sshd -T | grep -qix "permitrootlogin no"'
+check "passwords are refused"     'sudo -n sshd -T | grep -qix "passwordauthentication no"'
+check "host repo is admin's"      '[ "$(stat -c %U ~/arch/host.env)" = admin ]'
+check "no failed units"           '[ -z "$(systemctl --failed --no-legend)" ]'
+check "admin and aconfmgr are installed" 'command -v admin && aconfmgr --help'
+check "snapper has a root config" 'sudo -n snapper --no-dbus -c root list'
+systemctl --failed --no-legend
+exit $fail
+EOF
+}
+
+# admin apply --yes, logged to ${WORK}/LOG. aconfmgr --yes answers
+# pacman with 'yes': a question it cannot answer (which provider?)
+# repeats forever. Bound it in time and size.
+admin_apply() {
+    local log=${WORK}/$1
+    if ! vm admin@127.0.0.1 'set -o pipefail; timeout 2400 admin apply --yes 2>&1 | head -c 50000000' \
+        >"${log}" 2>&1; then
+        tail -n 20 "${log}" >&2
+        die "admin apply failed (see ${log})"
+    fi
+}
+
 # Step 6: the Desktop chapter, as the book does it: desktop/ into the
 # host repo, admin apply, reboot.
 desktop() {
@@ -286,13 +413,7 @@ desktop() {
     vm admin@127.0.0.1 'cat >>~/arch/packages.txt' <"${ROOT}/desktop/packages.txt"
     vm admin@127.0.0.1 'cat >>~/arch/units.txt' <"${ROOT}/desktop/units.txt"
     vm admin@127.0.0.1 'git -C ~/arch add -A && git -C ~/arch -c user.name=test -c user.email=test@setuptest commit -qm Desktop'
-    # aconfmgr --yes answers pacman with 'yes': a question it cannot
-    # answer (which provider?) repeats forever. Bound it in time and size.
-    if ! vm admin@127.0.0.1 'set -o pipefail; timeout 2400 admin apply --yes 2>&1 | head -c 50000000' \
-        >"${WORK}/desktop-apply.log" 2>&1; then
-        tail -n 20 "${WORK}/desktop-apply.log" >&2
-        die "admin apply failed (see ${WORK}/desktop-apply.log)"
-    fi
+    admin_apply desktop-apply.log
     grep -E '^Enabling units' "${WORK}/desktop-apply.log" || true
     vm admin@127.0.0.1 sudo -n systemctl poweroff || true
     wait_exit
@@ -301,6 +422,11 @@ desktop() {
     boot_installed "${WORK}/serial-desktop.log"
     wait_ssh admin "${WORK}/serial-desktop.log"
 
+    check_desktop
+    sway_home
+}
+
+check_desktop() {
     phase "Check the desktop"
     vm admin@127.0.0.1 "DAILY=${DAILY} bash -s" <<'EOF'
 set -u
@@ -316,7 +442,11 @@ check "no failed units"            '[ -z "$(systemctl --failed --no-legend)" ]'
 systemctl --failed --no-legend
 exit $fail
 EOF
+}
 
+# The desktop's user half: sway-home for the daily user, which lives in
+# /home and so is never in the host repo.
+sway_home() {
     phase "Desktop: sway-home for ${DAILY} (Home Manager)"
     # As the book does it: hm-install in the daily user's own systemd user
     # manager, which has a session bus. (Under a bare 'sudo -iu' there is none,
@@ -368,6 +498,81 @@ EOF
         || die "admin diff found drift after the desktop: the host repo does not describe it"
 }
 
+# Step 7: the Restore chapter. Change the machine and record it the way
+# the book does (admin save, sort, commit), keep only the host repo (as
+# a git bundle), erase the machine, and rebuild it from the repo onto a
+# new disk.
+restore() {
+    phase "Restore: change the machine, save it, sort it, commit"
+    # Two changes, sorted the two ways a repo can hold them: a package
+    # into packages.txt (which setup install installs), and a file left
+    # in aconfmgr's own terms (which only admin apply puts back).
+    vm admin@127.0.0.1 bash -s <<'EOF'
+set -euo pipefail
+fail() { echo "FAIL $*" >&2; exit 1; }
+sudo -n pacman -S --noconfirm tree >/dev/null
+echo "# Written by test-vm's RESTORE mode." | sudo -n tee /etc/restore-test.conf >/dev/null
+admin save >/dev/null 2>&1 || fail "admin save failed"
+cd ~/arch
+grep -qE '^AddPackage tree( |$)' aconfmgr/99-unsorted.sh || fail "admin save did not record tree"
+grep -qE '^CopyFile /etc/restore-test.conf( |$)' aconfmgr/99-unsorted.sh || fail "admin save did not record /etc/restore-test.conf"
+echo tree >>packages.txt
+grep -vE '^AddPackage tree( |$)' aconfmgr/99-unsorted.sh >aconfmgr/50-local.sh
+rm aconfmgr/99-unsorted.sh
+admin diff >/dev/null 2>&1 || fail "admin diff found drift after sorting"
+git add -A
+git -c user.name=test -c user.email=test@setuptest commit -qm "restore-test: tree; /etc/restore-test.conf"
+git bundle create /tmp/arch.bundle --all 2>/dev/null
+echo "ok   saved, sorted and committed: $(git log -1 --format=%s)"
+EOF
+    vm admin@127.0.0.1 'cat /tmp/arch.bundle' >"${WORK}/arch.bundle"
+    vm admin@127.0.0.1 sudo -n systemctl poweroff || true
+    wait_exit
+
+    phase "Restore: a new, blank disk"
+    # Another drive (another serial, so another by-id name): setup host
+    # has to pick the disk again.
+    DISK_SERIAL=setuptest2
+    blank_machine
+    install_from_stick bundle
+
+    phase "Boot the restored disk"
+    boot_installed "${WORK}/serial-restored.log"
+    wait_ssh admin "${WORK}/serial-restored.log"
+
+    phase "Check the restored system"
+    check_installed
+    vm admin@127.0.0.1 bash -s <<EOF
+set -u
+fail=0
+check() { if eval "\$2" >/dev/null 2>&1; then echo "ok   \$1"; else echo "FAIL \$1"; fail=1; fi; }
+check "the repo's history came back"    'git -C ~/arch log --format=%s | grep -q "^restore-test:"'
+check "the install log was carried on"  '[ "\$(grep -c "^setup install" ~/arch/logs/000_SETUP.txt)" -ge 2 ]'
+check "host.env names the new disk"     'grep -qx DISK=/dev/disk/by-id/virtio-${DISK_SERIAL} ~/arch/host.env'
+check "tree came back with the install" 'command -v tree'
+check "the file waits for admin apply"  '! test -e /etc/restore-test.conf'
+exit \$fail
+EOF
+
+    phase "Restore: admin apply"
+    admin_apply restore-apply.log
+    vm admin@127.0.0.1 'grep -qx "# Written by test-vm.s RESTORE mode." /etc/restore-test.conf' \
+        || die "admin apply did not put /etc/restore-test.conf back (see ${WORK}/restore-apply.log)"
+    echo "ok   admin apply put /etc/restore-test.conf back"
+
+    phase "admin diff after the restore"
+    vm admin@127.0.0.1 admin diff 2>/dev/null \
+        || die "admin diff found drift after the restore"
+
+    if [[ ${DESKTOP} == 1 ]]; then
+        # The system half came back with the install (packages.txt,
+        # units.txt, etc/); the user half was in /home, so it is
+        # installed again.
+        check_desktop
+        sway_home
+    fi
+}
+
 main() {
     local image
     command -v qemu-system-x86_64 >/dev/null || die "qemu-system-x86_64 is not installed (brew install qemu)"
@@ -392,13 +597,7 @@ main() {
     grep -v '^WARNING:' "${WORK}/provision.log" || true
     # The desktop's Nix store alone is over 12 GiB.
     [[ ${DESKTOP} == 1 ]] && DISK_SIZE=40G
-    qemu-img create -q -f qcow2 "${WORK}/disk.qcow2" "${DISK_SIZE}"
-    # Writable: the firmware keeps its variables there, and the source
-    # may be read-only (every file in the Nix store is), so is a copy
-    # kept by an earlier KEEP=1 run.
-    rm -f "${WORK}/vars.fd"
-    cp "${FW_VARS}" "${WORK}/vars.fd"
-    chmod u+w "${WORK}/vars.fd"
+    blank_machine
     cat >"${WORK}/host.env" <<EOF
 HOSTNAME=${HOST}
 DISK=/dev/disk/by-id/virtio-${DISK_SERIAL}
@@ -413,81 +612,14 @@ EOF
     # No root line: setup locks root and never asks for it.
     printf 'admin:%s\n%s:%s\n' "${PASSWORD}" "${DAILY}" "${PASSWORD}" >"${WORK}/passwords"
 
-    phase "Boot the stick"
-    boot_vm "${WORK}/serial-live.log" \
-        -drive if=none,id=stick,format=raw,file="${WORK}/stick.img" \
-        -device qemu-xhci -device usb-storage,drive=stick,bootindex=1
-    wait_ssh root "${WORK}/serial-live.log"
-
-    phase "Copy this tree's setup and the test answers"
-    vm root@127.0.0.1 'cat >/usr/local/bin/setup && chmod 755 /usr/local/bin/setup' <"${ROOT}/airootfs/usr/local/bin/setup"
-    vm root@127.0.0.1 'cat >/root/test-host.env' <"${WORK}/host.env"
-    vm root@127.0.0.1 'umask 077 && cat >/root/test-passwords' <"${WORK}/passwords"
-
-    phase "setup host"
-    vm root@127.0.0.1 setup host --from /root/test-host.env
-
-    phase "setup disk"
-    if [[ ${ENCRYPT} == yes ]]; then
-        # For LUKS, cryptsetup reads the passphrase from stdin up to the
-        # first newline whenever stdin is not a terminal -- so send it on
-        # a pipe and do NOT ask ssh for a pty (-tt). With a pty it prompts
-        # on the terminal instead and flushes what is already buffered
-        # there, which is what used to hang this step forever.
-        # Three lines covers both cryptsetup calls (luksFormat, then open)
-        # whether or not luksFormat asks a second time to verify; any line
-        # left over is simply never read.
-        printf '%s\n%s\n%s\n' "${PASSWORD}" "${PASSWORD}" "${PASSWORD}" \
-            | vm root@127.0.0.1 setup --yes disk --confirm-wipe "${HOST}"
-    else
-        vm root@127.0.0.1 setup --yes disk --confirm-wipe "${HOST}"
-    fi
-
-    phase "setup install"
-    vm root@127.0.0.1 setup --yes install --passwords /root/test-passwords
-
-    if [[ ${ENCRYPT} == yes ]]; then
-        # systemd-cryptsetup asks on /dev/console, which with no console=
-        # is the virtual console -- which QEMU is not showing and this
-        # test cannot type into. Point it at the serial line instead.
-        phase "Point the installed console at ttyS0 (ENCRYPT=yes only)"
-        vm root@127.0.0.1 \
-            "sed -i '/^options/ s/\$/ console=ttyS0,115200/' /mnt/boot/loader/entries/arch.conf \
-             && grep ^options /mnt/boot/loader/entries/arch.conf"
-    fi
-
-    phase "setup reboot"
-    vm root@127.0.0.1 setup --yes reboot || true
-    wait_exit
+    install_from_stick
 
     phase "Boot the installed disk"
     boot_installed "${WORK}/serial-installed.log"
     wait_ssh admin "${WORK}/serial-installed.log"
 
     phase "Check the installed system"
-    vm admin@127.0.0.1 "DAILY=${DAILY} bash -s" <<'EOF'
-set -u
-fail=0
-check() { if eval "$2" >/dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
-check "hostname is setuptest"     '[ "$(cat /etc/hostname)" = setuptest ]'
-check "/ is the @ subvolume"      'findmnt -no SOURCE / | grep -q "\[/@\]$"'
-check "/home is @home"            'findmnt -no SOURCE /home | grep -q "\[/@home\]$"'
-check "swap is on"                'swapon --show=NAME --noheadings | grep -qx /swap/swapfile'
-check "admin has passwordless sudo" 'sudo -n true'
-check "root is locked"            'sudo -n passwd -S root | awk "{exit !(\$2 == \"L\")}"'
-# The daily user starts with the administrator's keys, so you can log
-# in as yourself on the first boot.
-check "${DAILY} has admin's keys"  'sudo -n cmp -s ~admin/.ssh/authorized_keys "$(getent passwd "${DAILY}" | cut -d: -f6)/.ssh/authorized_keys"'
-check "${DAILY} exists, not in wheel" 'id "${DAILY}" && ! id -nG "${DAILY}" | grep -qw wheel'
-check "root cannot ssh"           'sudo -n sshd -T | grep -qix "permitrootlogin no"'
-check "passwords are refused"     'sudo -n sshd -T | grep -qix "passwordauthentication no"'
-check "host repo is admin's"      '[ "$(stat -c %U ~/arch/host.env)" = admin ]'
-check "no failed units"           '[ -z "$(systemctl --failed --no-legend)" ]'
-check "admin and aconfmgr are installed" 'command -v admin && aconfmgr --help'
-check "snapper has a root config" 'sudo -n snapper --no-dbus -c root list'
-systemctl --failed --no-legend
-exit $fail
-EOF
+    check_installed
 
     phase "snap-pac snapshots pacman"
     # Reinstalling a package changes nothing aconfmgr looks at.
@@ -502,6 +634,7 @@ EOF
         || die "admin diff found drift: the host repo does not describe the fresh install"
 
     [[ ${DESKTOP} == 1 ]] && desktop
+    [[ ${RESTORE} == 1 ]] && restore
 
     vm admin@127.0.0.1 sudo -n systemctl poweroff || true
     wait_exit
